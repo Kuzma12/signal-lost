@@ -29,3 +29,13 @@ I want the player to be able to see a map of the spaceship by typing "map". The 
 R5: Room Scanner
 
 I want to add a scanner so the player can explore the spaceship a little more. When they type "scan", the game should give them a clue about the room they are in. Each room should have its own clue, like something important to notice or information that might help the player escape. Scanning a room shouldn't use any oxygen, and the player should be able to scan the same room more than once.
+
+## Round 3 requirements
+
+R6: Collecting Items
+
+I want the player to be able to find different items around the spaceship, like a keycard, a repair kit, or other useful things. When the player enters a room, they should be able to see which items are there. They can type "take" followed by the item's name to pick it up. Once they collect something, it should be removed from that room and added to their inventory. If they try taking something that isn't there, the game should tell them. Picking up items shouldn't use any oxygen.
+
+R7: Inventory System
+
+I want the player to be able to check what they are carrying by typing "inventory". The game should show all the items they collected, and if they don't have anything, it should tell them their inventory is empty. I also want the player to be able to drop an item in the room they are currently in. That item should stay there until they pick it up again. Checking inventory or dropping items shouldn't use oxygen.
