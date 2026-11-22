@@ -1,6 +1,6 @@
 """Terminal output and full-playthrough tests for signal_lost.cli.
 
-Every test name starts with the requirement it checks (R1, R2, or R3), and
+Every test name starts with the requirement it checks (R1-R5), and
 its docstring names the acceptance criterion from spec.md Section 6.
 The CLI is driven by a fake input function (a scripted list of inputs) and
 a fake output function (a list that records every printed block), so no real
@@ -13,7 +13,7 @@ import sys
 import unittest
 from pathlib import Path
 
-from signal_lost.cli import render_room, run
+from signal_lost.cli import render_map, render_room, render_scan, run
 from signal_lost.game import Status
 from signal_lost.world import DIRECTIONS, build_ship
 
@@ -346,6 +346,186 @@ class ArchitectureAndEntryPointTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn(QUIT_MESSAGE, completed.stdout)
         self.assertNotIn("Traceback", completed.stderr)
+
+
+# Map labels from spec.md 3.7, used to check what is (and isn't) drawn.
+MAP_LABELS = {
+    "cryo_bay": "Cryo Bay", "medical_bay": "Med Bay",
+    "central_corridor": "Corridor", "bridge": "Bridge",
+    "comms_array": "Comms", "mess_hall": "Mess", "engineering": "Engines",
+    "reactor_core": "Reactor", "cargo_hold": "Cargo",
+    "airlock_junction": "Airlock", "escape_pod": "Pod",
+}
+
+
+class MapOutputTests(unittest.TestCase):
+    def test_R4_map_at_start_shows_only_the_cryo_bay_marked_as_current(self):
+        """R4 (AC-R4.2, AC-R4.3, AC-R4.4): a new game's map has one room, marked '*'."""
+        session = Session(["map"])
+        self.assertEqual(session.turns()[1], "\n".join([
+            "SHIP MAP  (* = you are here)",
+            "",
+            "[*Cryo Bay]",
+            "",
+            "You are in: Cryo Bay",
+            "Rooms visited: 1 of 11",
+            "",
+        ]))
+
+    def test_R4_map_matches_the_spec_example_after_exploring(self):
+        """R4 (AC-R4.2-AC-R4.5): spec.md 3.7 example, after n, e, s, e."""
+        session = Session(["n", "e", "s", "e", "map"])
+        self.assertEqual(session.turns()[5], "\n".join([
+            "SHIP MAP  (* = you are here)",
+            "",
+            "[ Med Bay ]--[ Corridor]",
+            "     |            |",
+            "[ Cryo Bay]  [ Engines ]--[*Reactor ]",
+            "",
+            "You are in: Reactor Core",
+            "Rooms visited: 5 of 11",
+            "",
+        ]))
+
+    def test_R4_map_hides_rooms_that_have_not_been_visited(self):
+        """R4 (AC-R4.4): no label for any unvisited room appears on the map."""
+        session = Session(["n", "e", "s", "e", "map"])
+        response = session.turns()[5]
+        for room_id in ("bridge", "comms_array", "mess_hall", "cargo_hold",
+                        "airlock_junction", "escape_pod"):
+            with self.subTest(room=room_id):
+                self.assertNotIn(MAP_LABELS[room_id], response)
+                self.assertNotIn(ROOMS[room_id].name, response)
+
+    def test_R4_only_the_current_room_is_marked(self):
+        """R4 (AC-R4.3): exactly one room carries the '*' marker, and it moves with you."""
+        session = Session(["n", "map", "e", "map"])
+        first, second = session.turns()[2], session.turns()[4]
+        self.assertEqual(first.count("[*"), 1)
+        self.assertIn("[*Med Bay ]", first)
+        self.assertEqual(second.count("[*"), 1)
+        self.assertIn("[*Corridor]", second)
+        self.assertIn("[ Med Bay ]", second)
+
+    def test_R4_no_line_is_drawn_across_a_sealed_bulkhead(self):
+        """R4 (AC-R4.5): Mess Hall sits above Reactor Core but they don't connect."""
+        rooms = {"cryo_bay", "medical_bay", "central_corridor", "mess_hall",
+                 "engineering", "reactor_core"}
+        lines = render_map("reactor_core", rooms).splitlines()
+        mess_row = next(i for i, line in enumerate(lines) if "Mess" in line)
+        under_mess = lines[mess_row + 1]
+        mess_middle = lines[mess_row].index("[ Mess") + 5
+        self.assertTrue(len(under_mess) <= mess_middle or under_mess[mess_middle] == " ")
+        # Cryo Bay and Engineering share a row but have no door between them.
+        self.assertIn("[ Cryo Bay]  [ Engines ]", lines[mess_row + 2])
+
+    def test_R4_fully_explored_map_draws_every_room_and_every_connection(self):
+        """R4 (AC-R4.2, AC-R4.5): 11 rooms, 6 horizontal and 6 vertical links."""
+        text = render_map("airlock_junction", set(ROOMS))
+        for room_id, label in MAP_LABELS.items():
+            with self.subTest(room=room_id):
+                self.assertIn(label, text)
+        self.assertEqual(text.count("--"), 6)
+        self.assertEqual(text.count("|"), 6)
+        self.assertIn("Rooms visited: 11 of 11", text)
+
+    def test_R4_map_lines_fit_in_50_columns(self):
+        """R4 (AC-R4.8): even the fully explored map is no wider than the frame."""
+        for current in ROOMS:
+            with self.subTest(current=current):
+                for line in render_map(current, set(ROOMS)).splitlines():
+                    self.assertLessEqual(len(line), 50)
+
+    def test_R4_map_uses_no_oxygen_and_keeps_you_in_place(self):
+        """R4 (AC-R4.6): many map checks later, oxygen and room are unchanged."""
+        session = Session(["n"] + ["map", "m", "  MAP "] * 4 + ["look"])
+        self.assertEqual(session.game.oxygen, 11)
+        self.assertEqual(session.game.room.id, "medical_bay")
+        self.assertIn("[ OXYGEN: 11/12 ]", session.turns()[-2])  # [-1] is the EOF quit
+
+    def test_R4_map_counts_a_revisited_room_once(self):
+        """R4 (AC-R4.7): walking back and forth still shows 2 rooms visited."""
+        session = Session(["n", "s", "n", "s", "map"])
+        self.assertIn("Rooms visited: 2 of 11", session.turns()[5])
+
+    def test_R4_help_lists_the_map_command(self):
+        """R4 (AC-R4.1): the help text mentions 'map'."""
+        session = Session(["help"])
+        self.assertIn("map", session.turns()[1])
+
+
+class ScanOutputTests(unittest.TestCase):
+    def test_R5_scan_shows_the_current_rooms_name_and_clue(self):
+        """R5 (AC-R5.3): scanning in the Medical Bay shows the Medical Bay clue."""
+        session = Session(["n", "scan"])
+        response = session.turns()[2]
+        self.assertEqual(response.splitlines()[0], "[ SCAN: MEDICAL BAY ]")
+        self.assertIn(squash(ROOMS["medical_bay"].clue), squash(response))
+        self.assertNotIn(squash(ROOMS["cryo_bay"].clue), squash(response))
+
+    def test_R5_every_room_scans_to_its_own_clue(self):
+        """R5 (AC-R5.3): render_scan shows each room's clue under its name."""
+        for room in ROOMS.values():
+            with self.subTest(room=room.id):
+                text = render_scan(room)
+                self.assertEqual(text.splitlines()[0], f"[ SCAN: {room.name.upper()} ]")
+                self.assertEqual(squash(" ".join(text.splitlines()[1:])), squash(room.clue))
+
+    def test_R5_scanning_again_gives_the_same_clue(self):
+        """R5 (AC-R5.5): repeated scans in one room print identical text."""
+        session = Session(["n", "scan", "sc", "SCAN"])
+        turns = session.turns()
+        self.assertEqual(turns[2], turns[3])
+        self.assertEqual(turns[3], turns[4])
+
+    def test_R5_scan_uses_no_oxygen_and_keeps_you_in_place(self):
+        """R5 (AC-R5.4): scans don't cost oxygen or move the player."""
+        session = Session(["n"] + ["scan"] * 10 + ["look"])
+        self.assertEqual(session.game.oxygen, 11)
+        self.assertEqual(session.game.room.id, "medical_bay")
+        self.assertIn("[ OXYGEN: 11/12 ]", session.turns()[-2])  # [-1] is the EOF quit
+
+    def test_R5_scan_output_fits_in_50_columns(self):
+        """R5 (AC-R5.6): wrapped clues are no wider than the frame."""
+        for room in ROOMS.values():
+            with self.subTest(room=room.id):
+                for line in render_scan(room).splitlines():
+                    self.assertLessEqual(len(line), 50)
+
+    def test_R5_help_lists_the_scan_command(self):
+        """R5 (AC-R5.1): the help text mentions 'scan'."""
+        session = Session(["help"])
+        self.assertIn("scan", session.turns()[1])
+
+    def test_R4_R5_help_text_fits_in_50_columns(self):
+        """R4 (AC-R4.1) and R5 (AC-R5.1): the longer help list still fits the frame."""
+        for line in Session(["help"]).turns()[1].splitlines():
+            self.assertLessEqual(len(line), 50)
+
+
+class Round2PlaythroughTests(unittest.TestCase):
+    def test_R4_R5_winning_with_map_and_scan_still_leaves_six_oxygen(self):
+        """R4 (AC-R4.6) and R5 (AC-R5.4): free commands don't change the shortest win."""
+        inputs = []
+        for direction in SHORTEST_ROUTE:
+            inputs += ["map", "scan", direction]
+        session = Session(inputs)
+        self.assertIn(WIN_BANNER, session.text)
+        self.assertIn("You escaped with 6 oxygen to spare.", session.text)
+        self.assertEqual(session.game.oxygen, 6)
+
+    def test_R4_R5_main_py_accepts_map_and_scan(self):
+        """R4 (AC-R4.1) and R5 (AC-R5.1), with AC-G.1: the real entry point runs both."""
+        completed = subprocess.run(
+            [sys.executable, "main.py"],
+            input="map\nscan\n" + "\n".join(SHORTEST_ROUTE) + "\n",
+            capture_output=True, text=True, cwd=PROJECT_ROOT, timeout=10,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("SHIP MAP", completed.stdout)
+        self.assertIn("[ SCAN: CRYO BAY ]", completed.stdout)
+        self.assertIn(WIN_BANNER, completed.stdout)
+        self.assertEqual(completed.stderr, "")
 
 
 if __name__ == "__main__":
