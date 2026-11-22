@@ -99,6 +99,14 @@ FULL_HEALTH_MESSAGE = ("You are already at full health.\n"
 CANT_USE_MESSAGE = "You can't use the {item}."
 USE_WHAT_MESSAGE = "Use what?"
 
+# Escape Pod lock messages (spec.md Section 3.11).
+LOCKED_MESSAGE = ("The escape pod door is locked.\n"
+                  "A keycard reader beside it blinks red.")
+UNLOCKED_MESSAGE = ("You swipe the keycard. The reader blinks green.\n"
+                    "The escape pod door is unlocked.")
+ALREADY_UNLOCKED_MESSAGE = "The escape pod door is already unlocked."
+WRONG_PLACE_MESSAGE = "The keycard doesn't work here."
+
 # Hazard messages (spec.md Section 3.10), shown after entering a hazard room.
 HAZARD_HEADER = "!! HAZARD: -{damage} HEALTH !!"
 HAZARD_MESSAGES = {
@@ -259,6 +267,8 @@ def render_result(result, command):
     if outcome is Outcome.BLOCKED:
         return (BLOCKED_MESSAGE.format(direction=command.arg) + "\n"
                 + render_exits(result.room))
+    if outcome is Outcome.LOCKED:
+        return LOCKED_MESSAGE + "\n" + render_exits(result.room)
     if outcome is Outcome.LOOKED:
         return render_room(result.room, result.oxygen, items=result.items,
                            health=result.health)
@@ -284,6 +294,12 @@ def render_result(result, command):
         return FULL_HEALTH_MESSAGE.format(item=result.item)
     if outcome is Outcome.CANT_USE:
         return textwrap.fill(CANT_USE_MESSAGE.format(item=result.item), WIDTH)
+    if outcome is Outcome.UNLOCKED:
+        return UNLOCKED_MESSAGE
+    if outcome is Outcome.ALREADY_UNLOCKED:
+        return ALREADY_UNLOCKED_MESSAGE
+    if outcome is Outcome.WRONG_PLACE:
+        return WRONG_PLACE_MESSAGE
     if outcome is Outcome.QUIT:
         return QUIT_MESSAGE
     if outcome is Outcome.INVALID:

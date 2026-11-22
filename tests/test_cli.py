@@ -1,6 +1,6 @@
 """Terminal output and full-playthrough tests for signal_lost.cli.
 
-Every test name starts with the requirement it checks (R1-R9), and
+Every test name starts with the requirement it checks (R1-R10), and
 its docstring names the acceptance criterion from spec.md Section 6.
 The CLI is driven by a fake input function (a scripted list of inputs) and
 a fake output function (a list that records every printed block), so no real
@@ -13,7 +13,14 @@ import sys
 import unittest
 from pathlib import Path
 
-from signal_lost.cli import HAZARD_MESSAGES, render_map, render_room, render_scan, run
+from signal_lost.cli import (
+    HAZARD_MESSAGES,
+    LOCKED_MESSAGE,
+    render_map,
+    render_room,
+    render_scan,
+    run,
+)
 from signal_lost.game import Status
 from signal_lost.world import DIRECTIONS, build_ship
 
@@ -919,6 +926,156 @@ class UseOutputTests(unittest.TestCase):
         for room_id, message in HAZARD_MESSAGES.items():
             with self.subTest(room=room_id):
                 self.assertLessEqual(len(message), 50)
+
+
+# ----- Round 5: keycard and the locked escape pod (R10, revised R3) -------
+
+TO_READER = SHORTEST_ROUTE[:-1]                  # n, e, s, s, e: no keycard
+TO_READER_WITH_KEYCARD = KEYCARD_ROUTE[:-2]      # ends at the reader, locked
+LOCKED_LINES = ["The escape pod door is locked.",
+                "A keycard reader beside it blinks red."]
+UNLOCKED_LINES = ["You swipe the keycard. The reader blinks green.",
+                  "The escape pod door is unlocked."]
+ALREADY_UNLOCKED = "The escape pod door is already unlocked."
+WRONG_PLACE = "The keycard doesn't work here."
+AIRLOCK_EXITS = "Exits: north, east, west"
+
+
+def replies(session):
+    """Responses to the scripted inputs only. When the script runs out
+    before the game ends, the extra last turn is the end-of-input quit."""
+    turns = session.turns()
+    if session.game.status is Status.QUIT and QUIT_MESSAGE in turns[-1]:
+        return turns[:-1]
+    return turns
+
+
+class LockedDoorOutputTests(unittest.TestCase):
+    def test_R10_locked_door_shows_the_message_hint_and_exits(self):
+        """R10 (AC-R10.2): the lock message, the keycard hint, then the exits."""
+        turns = replies(Session(TO_READER + ["e"]))
+        self.assertEqual(turns[-1].splitlines(), LOCKED_LINES + [AIRLOCK_EXITS])
+        self.assertEqual(LOCKED_MESSAGE.splitlines(), LOCKED_LINES)
+
+    def test_R10_locked_door_prints_no_room_display_or_ending(self):
+        """R10 (AC-R10.2, AC-R3.9): no pod display, no gauges, no win."""
+        session = Session(TO_READER + ["e", "look"])
+        locked = session.turns()[6]
+        self.assertNotIn("ESCAPE POD", locked)
+        self.assertNotIn("[ OXYGEN:", locked)
+        self.assertNotIn(WIN_BANNER, session.text)
+        self.assertEqual(session.game.status, Status.QUIT)   # input ran out
+
+    def test_R10_locked_door_costs_no_oxygen_or_health(self):
+        """R10 (AC-R10.2): 'look' after the refusal still shows 7 oxygen and 8 health."""
+        turns = replies(Session(TO_READER + ["e", "e", "look"]))
+        self.assertIn("  AIRLOCK JUNCTION", turns[-1])
+        self.assertEqual(gauge_lines(turns[-1]),
+                         [("[ OXYGEN: 7/12 ]", "[ HEALTH: 8/10 ]")])
+
+    def test_R10_locked_pod_stays_off_the_map(self):
+        """R10 (AC-R10.2): a refused move doesn't reveal the pod on the map."""
+        turns = replies(Session(TO_READER + ["e", "map"]))
+        self.assertNotIn("Pod", turns[-1])
+        self.assertIn("[*Airlock ]", turns[-1])
+
+    def test_R10_airlock_exits_line_is_unchanged_by_the_lock(self):
+        """R10 (AC-R10.9): the Airlock Junction still lists east."""
+        turns = replies(Session(TO_READER))
+        self.assertIn(AIRLOCK_EXITS, turns[-1].splitlines())
+
+    def test_R3_old_routes_into_the_pod_no_longer_win(self):
+        """R3 (AC-R3.9): the old 6- and 12-move routes stop at the locked door."""
+        for route in (SHORTEST_ROUTE, TWELVE_MOVE_POD):
+            with self.subTest(route=route):
+                session = Session(route)
+                self.assertEqual(replies(session)[-1].splitlines()[:2], LOCKED_LINES)
+                self.assertNotIn(WIN_BANNER, session.text)
+                self.assertNotIn(LOSS_BANNER, session.text)
+
+    def test_R3_old_shortest_route_still_shows_each_room_before_the_door(self):
+        """R3 (AC-R3.9) with R2 (AC-R2.2): the first five moves still display their rooms."""
+        turns = Session(SHORTEST_ROUTE).turns()
+        for index, room_id in enumerate(SHORTEST_ROOMS[:-1], start=1):
+            with self.subTest(move=index):
+                self.assertIn(f"  {ROOMS[room_id].name.upper()}", turns[index])
+
+
+class KeycardOutputTests(unittest.TestCase):
+    def test_R10_using_the_keycard_at_the_reader_unlocks_the_door(self):
+        """R10 (AC-R10.3): the unlock message, then east enters the pod and wins."""
+        session = Session(KEYCARD_ROUTE)
+        turns = session.turns()
+        self.assertEqual(turns[9].splitlines(), UNLOCKED_LINES)
+        self.assertIn("  ESCAPE POD", turns[10])
+        self.assertIn(WIN_BANNER, turns[10])
+
+    def test_R10_unlocking_costs_no_oxygen_and_keeps_the_keycard(self):
+        """R10 (AC-R10.4): look shows the same gauges, and the keycard is still carried."""
+        turns = replies(Session(TO_READER_WITH_KEYCARD + ["look", "use keycard", "look", "i"]))
+        self.assertEqual(gauge_lines(turns[-4]), gauge_lines(turns[-2]))
+        self.assertIn("  - keycard", turns[-1])
+
+    def test_R10_keycard_in_the_wrong_room_does_not_work(self):
+        """R10 (AC-R10.5): on the Bridge and in Engineering the keycard does nothing."""
+        turns = Session(["n", "e", "n", "take keycard", "use keycard", "s", "s",
+                         "USE  KEYCARD"]).turns()
+        self.assertEqual(turns[5], WRONG_PLACE + "\n")
+        self.assertEqual(turns[8], WRONG_PLACE + "\n")
+
+    def test_R10_keycard_not_carried_says_so(self):
+        """R10 (AC-R10.6): without the keycard the reader can't be used."""
+        session = Session(TO_READER + ["use keycard", "e"])
+        turns = session.turns()
+        self.assertEqual(turns[6], "You are not carrying 'keycard'.\n")
+        self.assertEqual(turns[7].splitlines()[:2], LOCKED_LINES)
+
+    def test_R10_second_use_says_already_unlocked(self):
+        """R10 (AC-R10.7): using the keycard again changes nothing."""
+        turns = replies(Session(TO_READER_WITH_KEYCARD + ["use keycard", "use keycard"]))
+        self.assertEqual(turns[-1], ALREADY_UNLOCKED + "\n")
+
+    def test_R10_door_stays_open_after_dropping_the_keycard(self):
+        """R10 (AC-R10.7): drop the keycard, step away, come back, and escape."""
+        session = Session(TO_READER_WITH_KEYCARD
+                          + ["use keycard", "drop keycard", "w", "e", "e"])
+        self.assertIn(WIN_BANNER, session.text)
+        self.assertNotIn(LOCKED_LINES[0], session.text)
+
+    def test_R10_flashlight_still_cannot_be_used_at_the_reader(self):
+        """R9 (AC-R9.7) with R10: only the keycard works at the reader."""
+        turns = replies(Session(["take flashlight"] + TO_READER + ["use flashlight"]))
+        self.assertEqual(turns[-1], "You can't use the flashlight.\n")
+
+    def test_R10_main_py_plays_a_keycard_win(self):
+        """R10 (AC-R10.8), with AC-G.1: the real entry point can be won with the keycard."""
+        completed = subprocess.run(
+            [sys.executable, "main.py"],
+            input="\n".join(TO_READER_WITH_KEYCARD + ["e", "use keycard", "e"]) + "\n",
+            capture_output=True, text=True, cwd=PROJECT_ROOT, timeout=10,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn(LOCKED_LINES[0], completed.stdout)
+        self.assertIn(UNLOCKED_LINES[1], completed.stdout)
+        self.assertIn(WIN_BANNER, completed.stdout)
+        self.assertEqual(completed.stderr, "")
+
+    def test_R10_new_output_fits_in_50_columns(self):
+        """R10 (AC-R10.9): lock, unlock, already-unlocked, and wrong-place lines fit."""
+        inputs = ["n", "e", "n", "take keycard", "use keycard", "s", "s", "s", "e",
+                  "e", "use keycard", "use keycard", "e"]
+        session = Session(inputs)
+        for text in (LOCKED_LINES[0], UNLOCKED_LINES[0], ALREADY_UNLOCKED, WRONG_PLACE):
+            self.assertIn(text, session.text)
+        for line in session.text.splitlines():
+            if line.startswith(("Unknown command", "The hatch", "You close", "Move with")):
+                continue  # Round 1 lines already known to be wider (handoff 3)
+            with self.subTest(line=line):
+                self.assertLessEqual(len(line), 50)
+
+    def test_R10_help_still_lists_use(self):
+        """R10 (AC-R10.9): 'use <item>' is still in help; no new command."""
+        self.assertIn("use <item>", Session(["help"]).turns()[1])
 
 
 if __name__ == "__main__":
