@@ -9,9 +9,11 @@ You move through a damaged spaceship by typing compass directions. Every
 move to another room uses one unit of oxygen. Reach the Escape Pod before
 your oxygen runs out to win.
 
-This is a CSC 299 final project, built in rounds. **Round 1** (this version)
-covers room navigation, room information, and oxygen with win/loss. Inventory,
-puzzles, hazards, and save/load are planned for later rounds.
+This is a CSC 299 final project, built in rounds. **Round 1** covers room
+navigation, room information, and oxygen with win/loss. **Round 2** (this
+version) adds a ship map of the rooms you've explored and a room scanner that
+gives clues. Inventory, puzzles, hazards, and save/load are planned for later
+rounds.
 
 ## Requirements
 
@@ -51,6 +53,8 @@ Exits: north, east, south, west
 |---------|-----------|--------------|-------------|
 | `north`, `south`, `east`, `west` | `n`, `s`, `e`, `w`, `go north` | Move to the next room | 1 |
 | `look` | `l` | Describe the current room again | 0 |
+| `map` | `m` | Show a map of the rooms you've visited (`*` marks where you are) | 0 |
+| `scan` | `sc` | Scan the current room for a clue | 0 |
 | `help` | `h`, `?` | List the commands | 0 |
 | `quit` | `q`, `exit` | Give up and end the game | 0 |
 
@@ -60,7 +64,9 @@ Commands ignore upper/lower case and extra spaces, so `  GO N ` works.
 
 - A successful move to another room costs **1 oxygen**.
 - Bumping into a wall (a direction with no exit), typing an unknown command,
-  `look`, and `help` are all **free**. You stay where you are.
+  `look`, `map`, `scan`, and `help` are all **free**. You stay where you are.
+- The map only shows rooms you have already entered. Rooms you haven't found
+  yet stay hidden.
 - When your oxygen is 3 or less, the gauge shows `!! LOW OXYGEN !!`.
 - **You win** if you enter the Escape Pod and still have oxygen left after
   that move.
