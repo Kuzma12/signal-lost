@@ -15,8 +15,8 @@ navigation, room information, and oxygen with win/loss. **Round 2** adds a
 ship map of the rooms you've explored and a room scanner that gives clues.
 **Round 3** adds items you can pick up, carry, and drop. **Round 4** adds
 health, hazard rooms that hurt you, and a medkit you can use to heal.
-**Round 5** (this version) locks the Escape Pod: you need the keycard to
-open it. Save/load is planned for a later round.
+**Round 5** locks the Escape Pod: you need the keycard to open it.
+**Round 6** (this version) lets you save your game and load it later.
 
 ## Requirements
 
@@ -63,6 +63,8 @@ Exits: north, east, south, west
 | `drop <item>` | | Leave a carried item in this room | 0 |
 | `inventory` | `inv`, `i` | List the items you are carrying | 0 |
 | `use <item>` | | Use a carried item; `use medkit` heals you, `use keycard` unlocks the pod at Airlock Junction | 0 |
+| `save` | | Save your game to `signal_lost_save.json` | 0 |
+| `load` | | Go back to your saved game | 0 |
 | `help` | `h`, `?` | List the commands | 0 |
 | `quit` | `q`, `exit` | Give up and end the game | 0 |
 
@@ -73,9 +75,9 @@ Item names must be typed in full: `take Repair Kit` works, `take kit` doesn't.
 
 - A successful move to another room costs **1 oxygen**.
 - Bumping into a wall (a direction with no exit), trying the locked pod
-  door, typing an unknown command,
-  `look`, `map`, `scan`, `take`, `drop`, `inventory`, `use`, and `help` are
-  all **free**. You stay where you are.
+  door, typing an unknown command, `look`, `map`, `scan`, `take`, `drop`,
+  `inventory`, `use`, `save`, `load`, and `help` are all **free**. You stay
+  where you are (unless `load` takes you back to your save).
 - The map only shows rooms you have already entered. Rooms you haven't found
   yet stay hidden.
 - Four items are hidden around the ship (a flashlight, a medkit, a keycard,
@@ -99,6 +101,14 @@ Item names must be typed in full: `take Repair Kit` works, `take kit` doesn't.
   drop the keycard. Using the keycard anywhere else says
   `The keycard doesn't work here.`
 - When your oxygen is 3 or less, the gauge shows `!! LOW OXYGEN !!`.
+- **Saving and loading:** type `save` to save your game. It remembers your
+  room, oxygen, health, inventory, the items left in every room, the rooms
+  on your map, and whether the pod door is unlocked. There is one save slot:
+  saving again replaces it. Type `load` (now or after restarting the game)
+  to go back to that point. The game prints `Game loaded.` and the room
+  with your oxygen and health. If there is no save, or the file is damaged
+  or has been edited into something impossible (like 99 oxygen), the game
+  says so and your current game carries on unchanged.
 - **You win** if you enter the Escape Pod after unlocking its door and still
   have oxygen left after that move. Reaching the locked door is not enough.
 - **You lose** if your oxygen reaches 0 before you escape. That includes
@@ -113,6 +123,13 @@ for the keycard) and passes just one hazard, leaving 4 oxygen and 8 health.
 You can escape without ever healing.
 Some parts of the ship are dead ends, so read the room descriptions carefully.
 
+### The save file
+
+The save file is `signal_lost_save.json`, in the folder you start the game
+from. It is plain JSON, so you can open it in any text editor. Delete it to
+start over with no save. Git ignores it (see `.gitignore`), so it never ends up
+in a commit.
+
 ## How to run the tests
 
 The automated tests use Python's built-in `unittest` library. From the
@@ -123,15 +140,19 @@ python3 -m unittest discover -s tests -v
 ```
 
 Each test name starts with the requirement it checks (`test_R1_…` through
-`test_R10_…`), and each docstring names the acceptance criterion
+`test_R12_…`), and each docstring names the acceptance criterion
 from `spec.md` Section 6 (for example `AC-R1.4`).
 
 | File | What it checks |
 |------|----------------|
 | `tests/test_world.py` | The map: 11 rooms, two-way exits, everything reachable, shortest map path to the pod is 6 moves, map grid, clues, starting items, hazard rooms, keycard reader room |
-| `tests/test_parser.py` | Command parsing: directions, shortcuts, `go`, `map`, `scan`, `take`/`get`/`drop`/`inventory`/`use` (including `use keycard`), case and spaces, bad input |
-| `tests/test_game.py` | The rules: movement, oxygen cost, blocked moves, winning, losing, the 0-oxygen boundary, visited rooms, taking and dropping items, health, hazard damage, using the medkit, the locked pod and the keycard, the revised win rule |
-| `tests/test_cli.py` | Terminal output and full scripted playthroughs, map and scan output, item and inventory messages, health gauge, hazard and death messages, `use` messages, locked-door and keycard messages, Ctrl-C/Ctrl-D, and running `main.py` |
+| `tests/test_parser.py` | Command parsing: directions, shortcuts, `go`, `map`, `scan`, `take`/`get`/`drop`/`inventory`/`use` (including `use keycard`), `save`/`load`, case and spaces, bad input |
+| `tests/test_game.py` | The rules: movement, oxygen cost, blocked moves, winning, losing, the 0-oxygen boundary, visited rooms, taking and dropping items, health, hazard damage, using the medkit, the locked pod and the keycard, the revised win rule, saving every part of the game, loading it back, and rejecting missing or damaged saves without changing the game |
+| `tests/test_savefile.py` | Writing and reading the JSON save file, safe overwriting, missing and unreadable files, and that Git ignores the save file |
+| `tests/test_cli.py` | Terminal output and full scripted playthroughs, map and scan output, item and inventory messages, health gauge, hazard and death messages, `use` messages, locked-door and keycard messages, save and load messages, Ctrl-C/Ctrl-D, and running `main.py` (including saving in one run and loading in the next) |
+
+Tests that save or load use temporary folders, so running the tests never
+creates or changes a save file in the project.
 
 ## Project structure
 
@@ -142,11 +163,12 @@ signal-lost/
 │   ├── world.py          # Rooms and the ship map (data only)
 │   ├── parser.py         # Turns typed text into a Command
 │   ├── game.py           # Game state and rules (no printing or input)
+│   ├── savefile.py       # Reads and writes the JSON save file
 │   └── cli.py            # Terminal input/output and text rendering
 ├── tests/                # unittest suite
 ├── docs/decisions/       # Architecture decision records
-├── problem.md            # Problem statement and requirements R1-R10
-└── spec.md               # Specification for Rounds 1-5
+├── problem.md            # Problem statement and requirements R1-R12
+└── spec.md               # Specification for Rounds 1-6
 ```
 
 The game rules (`game.py`) are kept separate from terminal input and output
