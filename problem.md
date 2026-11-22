@@ -49,3 +49,37 @@ I want to make the spaceship more dangerous by adding a health system. The playe
 R9: Medkit Healing
 
 I want the medkit from Round 3 to actually be useful. When the player has a medkit in their inventory, they should be able to type "use medkit" to restore 4 health points. Their health shouldn't go above the starting 10 points, and the medkit should disappear from their inventory after they successfully use it. If they try using a medkit they don't have, the game should tell them. If they're already at full health, the medkit shouldn't be wasted. Using a medkit shouldn't cost oxygen, and the other items should still work the same way as before.
+
+## Round 5 requirements
+
+R10: Keycard and Locked Escape Pod
+
+I want the keycard from Round 3 to finally have a purpose.
+The escape pod should be locked when the game starts.
+If the player tries entering the escape pod without
+unlocking it, the game should tell them that the door
+is locked. They should stay in the same room and
+shouldn't lose oxygen or health.
+
+The player should be able to collect the keycard
+from the Bridge and use it at the Airlock Junction
+by typing "use keycard". This should unlock the
+escape pod door so the player can enter it.
+Unlocking the door shouldn't use oxygen or consume
+the keycard. If they try using the keycard somewhere
+else, the game should tell them it doesn't work there.
+
+R3: Revised Escape Requirement
+
+I want to change the original R3 escape requirement.
+Before, the player only needed to reach the escape pod
+before running out of oxygen. Now the player must also
+unlock the escape pod door using the keycard before
+they can escape.
+
+The player should still need oxygen and health
+remaining to win. Reaching the escape pod without
+unlocking the door should no longer count as a win.
+
+This revision replaces the earlier R3 escape
+condition, but the original oxygen rules still apply.
