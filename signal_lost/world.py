@@ -6,7 +6,7 @@ player input, or printing.
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Mapping
+from typing import Mapping, Tuple
 
 # Compass directions in the fixed order used when listing exits.
 DIRECTIONS = ("north", "east", "south", "west")
@@ -38,7 +38,8 @@ class Room:
     ``exits`` maps a direction (e.g. ``"north"``) to the id of the room it
     leads to. It is stored as a read-only mapping so the map can't be
     changed by accident during play. ``clue`` is what the scanner reports
-    in this room.
+    in this room. ``items`` names the items lying here when a game starts;
+    the Game tracks where items are after that.
     """
 
     id: str
@@ -46,14 +47,25 @@ class Room:
     description: str
     exits: Mapping[str, str]
     clue: str
+    items: Tuple[str, ...] = ()
 
     def __post_init__(self):
         object.__setattr__(self, "exits", MappingProxyType(dict(self.exits)))
+        object.__setattr__(self, "items", tuple(self.items))
 
     def available_exits(self):
         """Return this room's exit directions in north, east, south, west order."""
         return [direction for direction in DIRECTIONS if direction in self.exits]
 
+
+# Items lying in each room when a game starts (spec.md Section 3.9).
+# Names are lower-case and unique so typed names can be matched exactly.
+STARTING_ITEMS = {
+    "cryo_bay": ("flashlight",),
+    "medical_bay": ("medkit",),
+    "bridge": ("keycard",),
+    "engineering": ("repair kit",),
+}
 
 _ROOM_DATA = [
     (
@@ -180,6 +192,7 @@ def build_ship():
     own copy.
     """
     return {
-        room_id: Room(room_id, name, description, exits, clue)
+        room_id: Room(room_id, name, description, exits, clue,
+                      STARTING_ITEMS.get(room_id, ()))
         for room_id, name, description, exits, clue in _ROOM_DATA
     }

@@ -1,6 +1,6 @@
 """Map integrity tests for signal_lost.world.
 
-Every test name starts with the requirement it checks (R1-R5), and
+Every test name starts with the requirement it checks (R1-R7), and
 its docstring names the acceptance criterion from spec.md Section 6.
 """
 
@@ -219,6 +219,51 @@ class RoomClueTests(unittest.TestCase):
                 self.assertTrue(room.clue.isascii())
                 sentences = [s for s in room.clue.split(". ") if s.strip()]
                 self.assertTrue(1 <= len(sentences) <= 2, room.clue)
+
+
+# Starting item placement from spec.md Section 3.9.
+EXPECTED_ITEMS = {
+    "cryo_bay": ("flashlight",),
+    "medical_bay": ("medkit",),
+    "bridge": ("keycard",),
+    "engineering": ("repair kit",),
+}
+
+
+class ItemPlacementTests(unittest.TestCase):
+    def setUp(self):
+        self.rooms = build_ship()
+
+    def test_R6_starting_items_are_in_the_rooms_the_spec_lists(self):
+        """R6 (AC-R6.2): flashlight, medkit, keycard, repair kit start where 3.9 says."""
+        for room in self.rooms.values():
+            with self.subTest(room=room.id):
+                self.assertEqual(room.items, EXPECTED_ITEMS.get(room.id, ()))
+
+    def test_R6_escape_pod_starts_with_no_items(self):
+        """R6 (AC-R6.2): the Escape Pod holds nothing."""
+        self.assertEqual(self.rooms[ESCAPE_ROOM].items, ())
+
+    def test_R6_item_names_are_unique_lower_case_and_single_spaced(self):
+        """R6 (AC-R6.2, AC-R6.7): names can be matched after normalizing input."""
+        names = [item for room in self.rooms.values() for item in room.items]
+        self.assertEqual(len(names), 4)
+        self.assertEqual(len(names), len(set(names)))
+        for name in names:
+            with self.subTest(item=name):
+                self.assertTrue(name.isascii())
+                self.assertEqual(name, " ".join(name.lower().split()))
+
+    def test_R6_room_items_are_an_immutable_tuple(self):
+        """R6 (AC-R6.2): the starting placement can't be changed by play."""
+        for room in self.rooms.values():
+            with self.subTest(room=room.id):
+                self.assertIsInstance(room.items, tuple)
+
+    def test_R6_room_without_items_argument_has_no_items(self):
+        """R6 (AC-R6.2): a Room built without items holds nothing."""
+        room = Room("x", "X", "A room.", {"north": "y"}, "A clue.")
+        self.assertEqual(room.items, ())
 
 
 if __name__ == "__main__":
