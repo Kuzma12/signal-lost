@@ -1,4 +1,4 @@
-# CLAUDE.md: Signal Lost
+
 
 Instructions for future development sessions on this project.
 
@@ -27,11 +27,15 @@ python3 -m unittest discover -s tests -v     # run all tests (must be 100% passi
   docstring cites the acceptance-criterion id from the spec (e.g. `AC-R3.6`).
 - **No failing or skipped tests** before a commit. Don't use `skip` decorators.
 - **Small Git commits** with messages that explain what changed and why.
-  **Never amend, rebase, or force-push**; history must not be rewritten.
+  **Never undo or amend a commit** (no `--amend`, `reset`, `revert`,
+  rebase, or force-push); history must not be rewritten.
 - **Don't push to GitHub** until the user has reviewed the work.
 - **Stay in scope for the current round.** Don't add stub fields,
   placeholder commands, or unused hooks for future features (spec Section 9).
-- Don't create round handoff files unless the user asks.
+- Don't create round handoff files unless the user asks. At the start of a
+  session, read the latest `handoff-round-N.md` if one exists.
+- **New requirements (R4+) must be written by the user and added to problem.md under a Round N requirements heading.** Commit and push the requirements before starting development. Update spec.md each round.  recorded before adding any, since `problem.md` and `spec.md` must not be
+  rewritten.
 
 ## Architecture (keep it this way)
 
