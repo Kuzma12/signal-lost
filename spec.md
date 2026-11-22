@@ -1,10 +1,16 @@
-# Signal Lost: Specification (Round 1)
+# Signal Lost: Specification (Rounds 1-2)
 
-This spec covers Round 1 of *Signal Lost*. It defines how requirements
-**R1 (Room Navigation)**, **R2 (Room Information)**, and **R3 (Oxygen and
-Escaping)** from `problem.md` will be built and tested. Features planned for
-later rounds (inventory, hazards, puzzles, save/load) are **out of scope**.
-Section 9 only describes where they will fit.
+This spec covers Rounds 1 and 2 of *Signal Lost*.
+
+- **Round 1** defines how requirements **R1 (Room Navigation)**, **R2 (Room
+  Information)**, and **R3 (Oxygen and Escaping)** from `problem.md` are
+  built and tested.
+- **Round 2** adds **R4 (Ship Map)** and **R5 (Room Scanner)**. Their
+  design is in Sections 3.7 and 3.8, and their acceptance criteria are in
+  Section 6. Round 2 changes nothing about how Round 1 features behave.
+
+Features planned for later rounds (inventory, hazards, puzzles, save/load)
+are **out of scope**. Section 9 only describes where they will fit.
 
 ---
 
@@ -25,7 +31,7 @@ Pod before their oxygen runs out.
 
 | Goal | How Round 1 meets it |
 |------|----------------------|
-| Easy to understand | Only four movement directions plus `help`, `look`, and `quit`. Every room lists its exits. |
+| Easy to understand | Only four movement directions plus `help`, `look`, and `quit`. Every room lists its exits. Round 2 adds `map` and `scan`, both free. |
 | Some challenge | The shortest route takes 6 moves out of 12. Dead ends and a loop of rooms that leads nowhere punish careless exploring. |
 | Sci-fi atmosphere | Short, evocative room descriptions, ship-alert style messages, and an oxygen gauge shown after every move. |
 | Polished | Clean formatting, input that ignores case and extra spaces, no crashes or tracebacks (including on Ctrl-C and Ctrl-D). |
@@ -67,9 +73,9 @@ signal-lost/
 
 | Module | Responsibility | Must NOT |
 |--------|----------------|----------|
-| `world.py` | Defines the `Room` type (id, name, description, exits) and `build_ship()`, which returns the full map. Also defines the `START_ROOM` and `ESCAPE_ROOM` ids. | Know about oxygen, input, or output. |
-| `parser.py` | `parse(text) -> Command`. Normalizes case and whitespace, expands aliases (`n` → `north`, `go north` → `north`), and labels input as move / help / look / quit / empty / unknown. | Change game state. |
-| `game.py` | `Game` class holding the current room, oxygen, and status (`PLAYING`, `WON`, `LOST`, `QUIT`). `Game.handle(command) -> TurnResult` applies the rules and returns a structured result. | Call `print()` or `input()`. |
+| `world.py` | Defines the `Room` type (id, name, description, exits, and from Round 2 a scanner `clue`) and `build_ship()`, which returns the full map. Also defines the `START_ROOM` and `ESCAPE_ROOM` ids and (Round 2) `MAP_GRID`, each room's row/column on the ship grid. | Know about oxygen, input, or output. |
+| `parser.py` | `parse(text) -> Command`. Normalizes case and whitespace, expands aliases (`n` → `north`, `go north` → `north`), and labels input as move / help / look / quit / map / scan / empty / unknown. | Change game state. |
+| `game.py` | `Game` class holding the current room, oxygen, status (`PLAYING`, `WON`, `LOST`, `QUIT`), and (Round 2) the set of visited room ids. `Game.handle(command) -> TurnResult` applies the rules and returns a structured result. | Call `print()` or `input()`. |
 | `cli.py` | `run(input_fn=input, output_fn=print)`. Reads input, calls the parser and `Game.handle`, and renders results to text. | Contain game rules. |
 | `main.py` | Calls `signal_lost.cli.run()` inside `if __name__ == "__main__":`. Nothing else. | Contain logic. |
 
@@ -80,13 +86,17 @@ lets later rounds add features without rewriting the loop.
 ### 2.2 Core Data Types
 
 - **`Room`** (frozen dataclass): `id: str`, `name: str`,
-  `description: str`, `exits: dict[str, str]` (direction → destination room id).
+  `description: str`, `exits: dict[str, str]` (direction → destination room id),
+  and from Round 2 `clue: str` (the scanner text, Section 3.8).
 - **`Command`** (frozen dataclass): `kind: str` (`"move"`, `"help"`,
-  `"look"`, `"quit"`, `"empty"`, `"unknown"`), `arg: str | None` (the
-  direction for moves, the original text for unknown input).
+  `"look"`, `"quit"`, `"map"`, `"scan"`, `"empty"`, `"unknown"`),
+  `arg: str | None` (the direction for moves, the original text for unknown
+  input).
 - **`TurnResult`** (dataclass): `outcome` (an enum such as `MOVED`,
-  `BLOCKED`, `INVALID`, `LOOKED`, `HELP`, `WON`, `LOST`, `QUIT`),
-  `room: Room`, `oxygen: int`, `oxygen_used: int` (0 or 1).
+  `BLOCKED`, `INVALID`, `LOOKED`, `HELP`, `MAPPED`, `SCANNED`, `WON`, `LOST`,
+  `QUIT`), `room: Room`, `oxygen: int`, `oxygen_used: int` (0 or 1), and from
+  Round 2 `visited: frozenset[str]` (ids of every room entered so far,
+  including the start room).
 - **Constants** in `game.py`: `STARTING_OXYGEN = 12`, `OXYGEN_PER_MOVE = 1`.
 
 ---
@@ -182,6 +192,8 @@ These commands **never** use oxygen:
 | Input | Effect |
 |-------|--------|
 | `look` / `l` | Shows the current room's information again (Section 3.6) |
+| `map` / `m` | (Round 2, R4) Shows the map of visited rooms (Section 3.7) |
+| `scan` / `sc` | (Round 2, R5) Shows the current room's scanner clue (Section 3.8) |
 | `help` / `h` / `?` | Lists the available commands |
 | `quit` / `q` / `exit` | Ends the game with a goodbye message. This counts as neither a win nor a loss. |
 
@@ -208,6 +220,83 @@ Rules:
   south, west**, skipping any the room doesn't have.
 - The oxygen gauge shows current/maximum.
 
+### 3.7 Ship Map (R4, Round 2)
+
+Typing `map` (or `m`) draws the part of the ship the player has explored.
+
+**Visited rooms.** The game remembers every room the player has entered.
+The Cryo Bay counts as visited from the start. A room is added when the
+player successfully moves into it. Blocked moves, `look`, `scan`, and `map`
+add nothing. Visiting a room again doesn't add it twice.
+
+**Layout.** Each room has a fixed position on a 4-column by 4-row grid
+(`MAP_GRID` in `world.py`), matching the diagram in 3.1:
+
+| Row \ Col | 0 | 1 | 2 | 3 |
+|-----------|---|---|---|---|
+| 0 | | Bridge | Comms Array | |
+| 1 | Medical Bay | Central Corridor | Mess Hall | |
+| 2 | Cryo Bay | Engineering | Reactor Core | |
+| 3 | | Cargo Hold | Airlock Junction | Escape Pod |
+
+Every exit joins two rooms that sit next to each other on the grid (east is
+column + 1, south is row + 1, and so on). A test checks this.
+
+**Drawing rules.**
+
+- Each grid cell is 11 characters wide, with 2-character gaps, so a full row
+  is exactly 50 columns: `4 × 11 + 3 × 2 = 50`.
+- A visited room is drawn as `[` + marker + label + `]`. The label is a short
+  name of at most 8 characters, padded to 8. The marker is `*` for the
+  current room and a space for every other room.
+- Short labels: Cryo Bay → `Cryo Bay`, Medical Bay → `Med Bay`, Central
+  Corridor → `Corridor`, Bridge → `Bridge`, Comms Array → `Comms`, Mess Hall
+  → `Mess`, Engineering → `Engines`, Reactor Core → `Reactor`, Cargo Hold →
+  `Cargo`, Airlock Junction → `Airlock`, Escape Pod → `Pod`.
+- A connection is drawn only when **both** rooms are visited **and** an exit
+  joins them: `--` in the gap for east/west, and `|` under the middle of the
+  cell for north/south. Neighbors with a sealed bulkhead between them get no
+  line.
+- **Unvisited rooms are not drawn at all,** and neither are the lines into
+  them. No `?` hints are shown. The player can still use `look` to see a
+  room's exits.
+- Trailing spaces are trimmed, and blank lines at the top and bottom of the
+  grid are dropped.
+
+**Output format** (after `n, e, s, e` from the start):
+
+```
+SHIP MAP  (* = you are here)
+
+[ Med Bay ]--[ Corridor]
+    |            |
+[ Cryo Bay]  [ Engines ]--[*Reactor ]
+
+You are in: Reactor Core
+Rooms visited: 5 of 11
+```
+
+The map uses no oxygen and never changes the room or the game status.
+
+### 3.8 Room Scanner (R5, Round 2)
+
+Typing `scan` (or `sc`) shows the current room's clue:
+
+```
+[ SCAN: ENGINEERING ]
+<clue text, wrapped to 50 columns>
+```
+
+- Every room has its **own** clue (`Room.clue`): one or two sentences,
+  non-empty, plain ASCII, different from every other room's clue and from
+  the room's description.
+- A room always gives the **same** clue (no randomness, Section 1.3). The
+  player can scan as often as they like.
+- Scanning uses no oxygen and never changes the room or the game status.
+- Clues point toward the escape route or warn about dead ends, so scanning
+  is a free way to plan with limited oxygen. The Escape Pod has a clue too,
+  even though entering it ends the game, so every room meets the rule above.
+
 ---
 
 ## 4. Oxygen, Winning, and Losing
@@ -216,8 +305,8 @@ Rules:
 
 1. Oxygen starts at **12**.
 2. A **successful** move to a different room lowers oxygen by exactly **1**.
-3. Blocked moves, invalid commands, empty input, `look`, `help`, and `quit`
-   use **0** oxygen.
+3. Blocked moves, invalid commands, empty input, `look`, `help`, `quit`,
+   and (Round 2) `map` and `scan` use **0** oxygen.
 4. Oxygen never goes below 0.
 
 ### 4.2 Turn Resolution Order
@@ -336,6 +425,30 @@ Each criterion has an ID. Section 7 maps every ID to at least one test.
 | AC-R3.7 | Once the game is `WON`, `LOST`, or `QUIT`, no more commands are processed and the program exits. |
 | AC-R3.8 | Following the shortest route (6 moves) wins with 6 oxygen left. |
 
+### R4: Ship Map (Round 2)
+
+| ID | Criterion |
+|----|-----------|
+| AC-R4.1 | `map` and `m` (ignoring case and extra spaces) are recognized as the map command, and `help` lists it. |
+| AC-R4.2 | The map shows every room the player has visited, including the Cryo Bay at the start. |
+| AC-R4.3 | The map marks the current room with `*`, and only the current room. It also names the current room. |
+| AC-R4.4 | Rooms the player has not visited do not appear on the map, and neither do connections into them. |
+| AC-R4.5 | A line is drawn between two visited rooms only when an exit joins them. |
+| AC-R4.6 | Using the map uses no oxygen and does not change the room or status. |
+| AC-R4.7 | Each room is recorded once no matter how often it is entered, and the map shows "Rooms visited: N of 11". |
+| AC-R4.8 | Every room's map position agrees with its exits, and every map line fits in 50 columns. |
+
+### R5: Room Scanner (Round 2)
+
+| ID | Criterion |
+|----|-----------|
+| AC-R5.1 | `scan` and `sc` (ignoring case and extra spaces) are recognized as the scan command, and `help` lists it. |
+| AC-R5.2 | Every room has a non-empty clue that is different from every other room's clue and from its own description. |
+| AC-R5.3 | Scanning shows the current room's name and that room's clue. |
+| AC-R5.4 | Scanning uses no oxygen and does not change the room or status. |
+| AC-R5.5 | The same room can be scanned more than once, and it gives the same clue each time. |
+| AC-R5.6 | Scanner output fits in 50 columns. |
+
 ### General Quality
 
 | ID | Criterion |
@@ -389,6 +502,23 @@ Each criterion has an ID. Section 7 maps every ID to at least one test.
 | | `input_fn` raising `EOFError` or `KeyboardInterrupt` → quit message, no exception | AC-G.3 |
 | | `game.py` source has no `print(` or `input(` (static check) | AC-G.4 |
 
+Round 2 additions:
+
+| File | Test (summary) | Covers |
+|------|----------------|--------|
+| `test_world.py` | Every room has a clue that is unique and differs from its description | AC-R5.2 |
+| | `MAP_GRID` covers every room, positions are unique, and each exit joins grid neighbors | AC-R4.8 |
+| `test_parser.py` | `map`/`m`/`  MAP ` parse to map; `scan`/`sc`/`SCAN` parse to scan | AC-R4.1, AC-R5.1 |
+| `test_game.py` | New game has visited = {`cryo_bay`}; moves add rooms; blocked moves and revisits don't | AC-R4.2, AC-R4.7 |
+| | `map` and `scan` return `MAPPED`/`SCANNED` and change no oxygen, room, or status, even when repeated | AC-R4.6, AC-R5.4, AC-R5.5 |
+| | Shortest route still wins with 6 oxygen when `map`/`scan` are used at every step | AC-R4.6, AC-R5.4 |
+| `test_cli.py` | Map at start shows only the Cryo Bay, marked `*` | AC-R4.2–4.4 |
+| | Map after exploring shows visited rooms, correct lines, no unvisited labels | AC-R4.2–4.5 |
+| | Sealed bulkhead between two visited rooms has no line | AC-R4.5 |
+| | Map lines fit in 50 columns, including the fully explored map | AC-R4.8 |
+| | Scan prints the current room's clue; repeated scans print the same text | AC-R5.3, AC-R5.5 |
+| | `help` lists `map` and `scan` | AC-R4.1, AC-R5.1 |
+
 Example scripted paths:
 - **Shortest win (6):** `n, e, s, s, e, e`
 - **10-move win:** `n, s, n, s, n, e, s, s, e, e`
@@ -441,3 +571,9 @@ later.
 
 Items, inventory, hazards, puzzles, locked doors, save/load, randomness,
 color output, sound, difficulty levels, and score tracking.
+
+### Round 2
+
+Round 2 adds only the map (R4) and the scanner (R5). Everything listed
+above is still out of scope. Scanning does not reveal unvisited rooms on
+the map, and the map does not hint at unexplored exits.
