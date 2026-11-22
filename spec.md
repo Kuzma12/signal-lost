@@ -1,6 +1,6 @@
-# Signal Lost: Specification (Rounds 1-3)
+# Signal Lost: Specification (Rounds 1-4)
 
-This spec covers Rounds 1 to 3 of *Signal Lost*.
+This spec covers Rounds 1 to 4 of *Signal Lost*.
 
 - **Round 1** defines how requirements **R1 (Room Navigation)**, **R2 (Room
   Information)**, and **R3 (Oxygen and Escaping)** from `problem.md` are
@@ -13,6 +13,12 @@ This spec covers Rounds 1 to 3 of *Signal Lost*.
   Section 6. Round 3 changes nothing about how Round 1-2 features behave,
   except that the room display gains an `Items here:` line in rooms that
   hold items.
+- **Round 4** adds **R8 (Health and Hazards)** and **R9 (Medkit Healing)**.
+  Their design is in Section 3.10, and their acceptance criteria are in
+  Section 6. Round 4 adds a health gauge line to the room display, a health
+  step to the turn order (Section 4.2), a second way to lose, and the first
+  item that is used up (the medkit). Everything else from Rounds 1-3
+  behaves as before.
 
 Features planned for later rounds (inventory, hazards, puzzles, save/load)
 are **out of scope**. Section 9 only describes where they will fit.
@@ -78,9 +84,9 @@ signal-lost/
 
 | Module | Responsibility | Must NOT |
 |--------|----------------|----------|
-| `world.py` | Defines the `Room` type (id, name, description, exits, and from Round 2 a scanner `clue`) and `build_ship()`, which returns the full map. Also defines the `START_ROOM` and `ESCAPE_ROOM` ids and (Round 2) `MAP_GRID`, each room's row/column on the ship grid. (Round 3) Each `Room` also lists the items it holds at the start of a game. | Know about oxygen, input, or output. |
-| `parser.py` | `parse(text) -> Command`. Normalizes case and whitespace, expands aliases (`n` → `north`, `go north` → `north`), and labels input as move / help / look / quit / map / scan / empty / unknown, and (Round 3) take / drop / inventory. | Change game state. |
-| `game.py` | `Game` class holding the current room, oxygen, status (`PLAYING`, `WON`, `LOST`, `QUIT`), and (Round 2) the set of visited room ids. (Round 3) It also holds the items currently in each room and the player's inventory. `Game.handle(command) -> TurnResult` applies the rules and returns a structured result. | Call `print()` or `input()`. |
+| `world.py` | Defines the `Room` type (id, name, description, exits, and from Round 2 a scanner `clue`) and `build_ship()`, which returns the full map. Also defines the `START_ROOM` and `ESCAPE_ROOM` ids and (Round 2) `MAP_GRID`, each room's row/column on the ship grid. (Round 3) Each `Room` also lists the items it holds at the start of a game. (Round 4) Each `Room` says whether it is a hazard, and `HAZARD_ROOMS` names those rooms. | Know about oxygen, input, or output. |
+| `parser.py` | `parse(text) -> Command`. Normalizes case and whitespace, expands aliases (`n` → `north`, `go north` → `north`), and labels input as move / help / look / quit / map / scan / empty / unknown, and (Round 3) take / drop / inventory, and (Round 4) use. | Change game state. |
+| `game.py` | `Game` class holding the current room, oxygen, status (`PLAYING`, `WON`, `LOST`, `QUIT`), and (Round 2) the set of visited room ids. (Round 3) It also holds the items currently in each room and the player's inventory. (Round 4) It also holds the player's health. `Game.handle(command) -> TurnResult` applies the rules and returns a structured result. | Call `print()` or `input()`. |
 | `cli.py` | `run(input_fn=input, output_fn=print)`. Reads input, calls the parser and `Game.handle`, and renders results to text. | Contain game rules. |
 | `main.py` | Calls `signal_lost.cli.run()` inside `if __name__ == "__main__":`. Nothing else. | Contain logic. |
 
@@ -95,13 +101,15 @@ lets later rounds add features without rewriting the loop.
   and from Round 2 `clue: str` (the scanner text, Section 3.8). From Round 3,
   `items: tuple[str, ...]` (the item names in this room when a game starts,
   Section 3.9). `Room` stays frozen; items that move during play are tracked
-  by `Game`, not by `Room`.
+  by `Game`, not by `Room`. From Round 4, `hazard: bool` (default `False`):
+  `True` if entering the room hurts the player (Section 3.10).
 - **`Command`** (frozen dataclass): `kind: str` (`"move"`, `"help"`,
   `"look"`, `"quit"`, `"map"`, `"scan"`, `"empty"`, `"unknown"`),
   `arg: str | None` (the direction for moves, the original text for unknown
   input). From Round 3, `kind` can also be `"take"`, `"drop"`, or
   `"inventory"`, and `arg` is the item name for `take` / `drop` (lower-case,
-  single-spaced, or `None` if no name was typed).
+  single-spaced, or `None` if no name was typed). From Round 4, `kind` can
+  also be `"use"`, with the item name in `arg` the same way.
 - **`TurnResult`** (dataclass): `outcome` (an enum such as `MOVED`,
   `BLOCKED`, `INVALID`, `LOOKED`, `HELP`, `MAPPED`, `SCANNED`, `WON`, `LOST`,
   `QUIT`), `room: Room`, `oxygen: int`, `oxygen_used: int` (0 or 1), and from
@@ -110,8 +118,13 @@ lets later rounds add features without rewriting the loop.
   (items in the current room now), `inventory: tuple[str, ...]` (items the
   player carries, in pickup order), and `item: str | None` (the item named by
   a `take` / `drop`). New outcomes: `TAKEN`, `NOT_HERE`, `DROPPED`,
-  `NOT_CARRIED`, `INVENTORY`.
+  `NOT_CARRIED`, `INVENTORY`. From Round 4 it also has `health: int` (health
+  now), `damage: int` (health lost to a hazard this turn, 0 or 2), and
+  `healed: int` (health restored by a medkit this turn). New outcomes:
+  `DIED` (health reached 0), `HEALED`, `FULL_HEALTH`, `CANT_USE`.
 - **Constants** in `game.py`: `STARTING_OXYGEN = 12`, `OXYGEN_PER_MOVE = 1`.
+  From Round 4: `STARTING_HEALTH = 10` (also the maximum), `HAZARD_DAMAGE = 2`,
+  `MEDKIT = "medkit"`, `MEDKIT_HEALING = 4`.
 
 ---
 
@@ -211,6 +224,7 @@ These commands **never** use oxygen:
 | `take <item>` / `get <item>` | (Round 3, R6) Picks up an item in this room (Section 3.9) |
 | `drop <item>` | (Round 3, R7) Leaves a carried item in this room (Section 3.9) |
 | `inventory` / `inv` / `i` | (Round 3, R7) Lists the items being carried (Section 3.9) |
+| `use <item>` | (Round 4, R9) Uses a carried item; only the medkit does anything (Section 3.10) |
 | `help` / `h` / `?` | Lists the available commands |
 | `quit` / `q` / `exit` | Ends the game with a goodbye message. This counts as neither a win nor a loss. |
 
@@ -378,6 +392,90 @@ exactly as in Section 3.6. A long list wraps to 50 columns.
 None of these commands use oxygen or change the room or game status. Taking
 an item does not change the map or the visited rooms.
 
+### 3.10 Health, Hazards, and the Medkit (R8, R9, Round 4)
+
+**Health.** A new game starts with **10 health**, which is also the most
+the player can have. Health never goes below 0 or above 10.
+
+**Showing health.** Every room display (game start, entering a room, `look`,
+and the final display of a finished game) gets a health gauge on its own line
+directly under the oxygen gauge:
+
+```
+Exits: north, west
+[ OXYGEN: 9/12 ]
+[ HEALTH: 8/10 ]
+```
+
+It goes on a separate line because oxygen, health, and the `!! LOW OXYGEN !!`
+warning would not fit in 50 columns on one line. There is no low-health
+warning.
+
+**Hazard rooms.** The **Reactor Core** and the **Cargo Hold** are hazards
+(`Room.hazard` is `True`; `HAZARD_ROOMS` in `world.py`). No other room is.
+Every **successful** move into a hazard room, including going back into one,
+lowers health by **2**. The move still costs the normal 1 oxygen. Blocked
+moves, `look`, and every other command never change health, even while
+standing in a hazard room. Starting rooms, the Escape Pod, and every other
+room are safe.
+
+When a move hurts the player, the room display is followed by a blank line
+and a hazard message:
+
+```
+!! HAZARD: -2 HEALTH !!
+A drifting crate slams into you.
+```
+
+The second line depends on the room: the Reactor Core says `Radiation from
+the reactor scorches your suit.`, and the Cargo Hold says `A drifting crate
+slams into you.`
+
+**Dying.** If health reaches 0, the game ends: status becomes `LOST`, the
+outcome is `DIED`, and the room display and hazard message are followed by:
+
+```
+>>> CRITICAL INJURIES <<<
+Your suit alarms fade as everything goes dark...
+You didn't survive.
+*** GAME OVER: YOU LOST ***
+```
+
+If one move brings **both** health and oxygen to 0, the player gets this
+health ending, not the oxygen one (the hazard hits on arrival). See 4.2.
+
+**Balance.** The Airlock Junction can only be reached through the Reactor
+Core or the Cargo Hold, so every winning route takes at least 2 damage.
+Both 6-move routes win with **8 health** and 6 oxygen, so the player can
+escape without healing (R8). The nearest hazard is 4 moves from the start,
+and re-entering a hazard takes at least 2 more moves, so a fifth hazard
+entry (the one that brings health from 10 to 0) can only happen on move 12,
+when oxygen also runs out. Health matters most as a limit on wandering
+through hazard rooms, and the medkit lets a careless player survive one
+extra hazard.
+
+**Using items (R9).** `use <item>` uses an item the player is carrying. The
+name is matched the same way as `take` and `drop` (Section 3.9).
+
+| Input | Case | Output | State change |
+|-------|------|--------|--------------|
+| `use medkit` | carrying the medkit, health below 10 | `You use the medkit and restore <n> health.` | health goes up by 4, but not above 10 (`<n>` is the amount actually restored); the medkit is removed from the inventory and is gone for good |
+| | carrying the medkit, health is 10 | `You are already at full health.` then `You keep the medkit for later.` | none (the medkit stays in the inventory) |
+| `use <item>` | the item is not carried (still in a room, already used, or not a real item) | `You are not carrying '<item>'.` | none |
+| | carrying an item other than the medkit | `You can't use the <item>.` | none |
+| | no name (`use`) | `Use what?` | none |
+
+The "not carried" check comes first, so `use keycard` without the keycard
+says you are not carrying it. Using an item costs no oxygen and never
+changes the room, status, or visited rooms. A medkit lying in the room must
+be taken before it can be used. Taking, dropping, and listing items, the
+medkit included, work exactly as in Section 3.9.
+
+**Item count.** Items are still never duplicated or moved by anything
+other than `take` and `drop`. The one change is that a medkit that has been
+used is no longer anywhere: not in a room and not in the inventory. So the
+ship holds four items until the medkit is used, and three after.
+
 ---
 
 ## 4. Oxygen, Winning, and Losing
@@ -388,7 +486,7 @@ an item does not change the map or the visited rooms.
 2. A **successful** move to a different room lowers oxygen by exactly **1**.
 3. Blocked moves, invalid commands, empty input, `look`, `help`, `quit`,
    (Round 2) `map` and `scan`, and (Round 3) `take`, `drop`, and
-   `inventory` use **0** oxygen.
+   `inventory`, and (Round 4) `use` use **0** oxygen.
 4. Oxygen never goes below 0.
 
 ### 4.2 Turn Resolution Order
@@ -403,6 +501,12 @@ When a move succeeds, the game does these steps in order:
 5. Otherwise, check for a **loss**: oxygen == 0. If so, status becomes
    `LOST`.
 6. Otherwise, keep playing.
+
+(Round 4) Health adds one step and one check. After step 2, if the
+destination is a hazard room, health goes down by 2 (never below 0). Before
+the win check in step 4, if health is 0, status becomes `LOST` with outcome
+`DIED`, and the win and oxygen checks are skipped. Section 3.10 has the
+details.
 
 ### 4.3 Boundary Interpretation
 
@@ -556,6 +660,35 @@ Each criterion has an ID. Section 7 maps every ID to at least one test.
 | AC-R7.7 | Items are never duplicated or lost: across all rooms and the inventory there are always exactly the four starting items. |
 | AC-R7.8 | Item and inventory output fits in 50 columns, even with all four items in one room. |
 
+(Round 4) From Round 4 on, AC-R7.7 holds until the medkit is used. After
+that, AC-R9.7 applies instead.
+
+### R8: Health and Hazards (Round 4)
+
+| ID | Criterion |
+|----|-----------|
+| AC-R8.1 | A new game starts with exactly 10 health. |
+| AC-R8.2 | Every room display (game start, entering a room, `look`, and the final display when the game ends) shows `[ HEALTH: <h>/10 ]` on the line under the oxygen gauge. |
+| AC-R8.3 | The Reactor Core and the Cargo Hold are the only hazard rooms. |
+| AC-R8.4 | Every successful move into a hazard room, including going back into one, lowers health by exactly 2 and shows the hazard message for that room. |
+| AC-R8.5 | A move into a hazard room costs exactly 1 oxygen, the same as any move. Moves into safe rooms, blocked moves, and all non-move commands (including `look` in a hazard room) do not change health. |
+| AC-R8.6 | When health reaches 0, status becomes `LOST` and the game shows the room, the hazard message, and the "You didn't survive." ending; no more commands are processed. Health never goes below 0. |
+| AC-R8.7 | If one move brings both health and oxygen to 0, the health ending is shown, not the oxygen one. |
+| AC-R8.8 | The player can escape without healing: both 6-move routes win with 8 health and 6 oxygen. |
+| AC-R8.9 | Health and hazard output fits in 50 columns. |
+
+### R9: Medkit Healing (Round 4)
+
+| ID | Criterion |
+|----|-----------|
+| AC-R9.1 | `use <item>` (ignoring case and extra spaces) is recognized as the use command with the item's normalized name; `use` with no name gives `Use what?`. `help` lists `use`. |
+| AC-R9.2 | With the medkit carried and health below 10, `use medkit` restores 4 health, never going above 10, and says how much was restored. |
+| AC-R9.3 | A successful `use medkit` removes the medkit from the inventory. |
+| AC-R9.4 | `use medkit` when the medkit is not carried (never taken, dropped, or already used) says the player is not carrying it and changes nothing. |
+| AC-R9.5 | `use medkit` at full health says so, keeps the medkit, and changes nothing. |
+| AC-R9.6 | Using an item uses no oxygen and does not change the room, status, or visited rooms. |
+| AC-R9.7 | Other items work as before: `use` on any other carried item says it can't be used and changes nothing, and `take`, `drop`, and `inventory` still work for every item, including the medkit before it is used. Items are never duplicated or lost, except that a used medkit is no longer in any room or the inventory. |
+
 ### General Quality
 
 | ID | Criterion |
@@ -644,11 +777,30 @@ Round 3 additions:
 | | A dropped item appears when the player comes back to that room | AC-R7.4 |
 | | `help` lists take, drop, and inventory; item output fits 50 columns with all items in one room | AC-R6.1, AC-R7.1, AC-R7.8 |
 
+Round 4 additions:
+
+| File | Test (summary) | Covers |
+|------|----------------|--------|
+| `test_world.py` | Only the Reactor Core and Cargo Hold are hazards; `HAZARD_ROOMS` matches `Room.hazard` | AC-R8.3 |
+| | Every route to the pod passes a hazard; both 6-move routes enter exactly one | AC-R8.8 |
+| `test_parser.py` | `use medkit`/`  USE  MedKit ` parse to use with a normalized name; bare `use` gives no name | AC-R9.1 |
+| `test_game.py` | New game has 10 health; entering a hazard costs 2 health and 1 oxygen, again on re-entry; safe moves, blocked moves, and other commands don't | AC-R8.1, AC-R8.3-8.5 |
+| | Health 0 → `DIED`/`LOST`, health never negative; both reaching 0 together → `DIED`; game over afterwards | AC-R8.6, AC-R8.7 |
+| | Shortest routes win with 8 health and 6 oxygen | AC-R8.8 |
+| | `use medkit` heals 4, capped at 10, removes the medkit; not carried, full health, other items, and no name change nothing; use is free | AC-R9.2-9.7 |
+| | Item total is three after the medkit is used, four before | AC-R9.7 |
+| `test_cli.py` | Health gauge line under oxygen at start, after moves, on `look`, and on the final win/loss/death displays | AC-R8.2 |
+| | Hazard message after entering each hazard room; no message in safe rooms | AC-R8.4 |
+| | Health ending text, including when oxygen hits 0 on the same move | AC-R8.6, AC-R8.7 |
+| | `use` messages from 3.10; `help` lists `use`; all new output fits 50 columns | AC-R9.1-9.5, AC-R8.9 |
+
 Example scripted paths:
 - **Shortest win (6):** `n, e, s, s, e, e`
 - **10-move win:** `n, s, n, s, n, e, s, s, e, e`
 - **12-move pod arrival (loss):** `n, s, n, s, n, s, n, e, s, s, e, e`
 - **Wander loss (12):** `n, s` repeated 6 times
+- **(Round 4) Hazard death (12):** `n, e, s, e`, then `w, e` repeated 4
+  times (the Reactor Core five times; health and oxygen both reach 0)
 
 ### 7.3 Running Tests
 
@@ -681,7 +833,7 @@ following will be built in Round 1.**
 | Future feature | Where it will plug in |
 |----------------|-----------------------|
 | **Inventory** (`take`, `drop`, `inventory`) | *Built in Round 3, see Section 3.9.* Add an `items` field to `Room` and an `inventory` to `Game`. Add new `Command.kind` values in `parser.py` and handlers in `Game.handle`. The CLI loop doesn't change. |
-| **Hazards** (e.g. a reactor leak that costs extra oxygen) | Add a hook in `Game` after "enter room" (step 3 in 4.2) that can change oxygen or status. Rooms get an optional hazard attribute. |
+| **Hazards** (e.g. a reactor leak that costs extra oxygen) | *Built in Round 4 as health damage, see Section 3.10.* Add a hook in `Game` after "enter room" (step 3 in 4.2) that can change oxygen or status. Rooms get an optional hazard attribute. |
 | **Puzzles / locked doors** | Exits can later point to a small `Exit` object (destination + optional lock condition). Movement already goes through a single method, `Game._move()`, so lock checks go in one place. |
 | **Save / load** | All game state lives in plain data on `Game` (room id, oxygen, status). Later rounds add `to_dict()` / `from_dict()` and JSON storage. The map is rebuilt from `build_ship()`, so only player state needs saving. |
 | **New commands in general** | `Game.handle` sends each command to a handler using a dict of `kind → method`, so adding a command means adding one parser rule and one handler. |
@@ -710,3 +862,11 @@ no effect on movement, oxygen, or winning; locked doors, puzzles, item
 descriptions (`examine`), using items, carrying limits, `take all` /
 `drop all`, and partial item names are out of scope. Hazards, save/load,
 and the rest of the list above are still out of scope.
+
+### Round 4
+
+Round 4 adds only health and hazards (R8) and using the medkit (R9).
+Hazards that cost oxygen or change over time, random damage, other ways to
+heal, a low-health warning, health in the win message, uses for the
+flashlight, keycard, or repair kit, locked doors, puzzles, and save/load
+are out of scope.
