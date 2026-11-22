@@ -1,6 +1,6 @@
 """Command parsing tests for signal_lost.parser.
 
-Every test name starts with the requirement it checks (R1-R5), and
+Every test name starts with the requirement it checks (R1-R7), and
 its docstring names the acceptance criterion from spec.md Section 6.
 """
 
@@ -134,6 +134,58 @@ class Round2CommandParsingTests(unittest.TestCase):
         for text in ("map room", "scan north", "go map"):
             with self.subTest(text=text):
                 self.assertEqual(parse(text).kind, "unknown")
+
+
+class ItemParsingTests(unittest.TestCase):
+    def test_R6_take_and_get_parse_to_take_with_the_item_name(self):
+        """R6 (AC-R6.1): 'take <item>' and 'get <item>' are the take command."""
+        for text in ("take keycard", "get keycard", "TAKE KEYCARD", "  Get   Keycard "):
+            with self.subTest(text=text):
+                self.assertEqual(parse(text), Command("take", "keycard"))
+
+    def test_R6_multi_word_item_names_are_normalized(self):
+        """R6 (AC-R6.1, AC-R6.7): case and extra spaces inside the name are ignored."""
+        for text in ("take repair kit", "  TAKE  Repair   Kit ", "get REPAIR KIT"):
+            with self.subTest(text=text):
+                self.assertEqual(parse(text), Command("take", "repair kit"))
+
+    def test_R6_take_with_no_item_name_has_no_arg(self):
+        """R6 (AC-R6.1): bare 'take' or 'get' is a take command with no name."""
+        for text in ("take", "GET", "  take  "):
+            with self.subTest(text=text):
+                self.assertEqual(parse(text), Command("take"))
+
+    def test_R6_partial_names_are_passed_through_unchanged(self):
+        """R6 (AC-R6.7): the parser does not guess; 'take kit' names 'kit'."""
+        self.assertEqual(parse("take kit"), Command("take", "kit"))
+
+    def test_R7_drop_parses_to_drop_with_the_item_name(self):
+        """R7 (AC-R7.1): 'drop <item>' is the drop command with a normalized name."""
+        for text, name in (("drop medkit", "medkit"), ("  DROP  Repair Kit", "repair kit")):
+            with self.subTest(text=text):
+                self.assertEqual(parse(text), Command("drop", name))
+
+    def test_R7_drop_with_no_item_name_has_no_arg(self):
+        """R7 (AC-R7.5): bare 'drop' is a drop command with no name."""
+        self.assertEqual(parse("drop"), Command("drop"))
+
+    def test_R7_inventory_and_its_aliases_parse_to_inventory(self):
+        """R7 (AC-R7.1): 'inventory', 'inv', 'i' are the inventory command."""
+        for text in ("inventory", "inv", "i", "INVENTORY", "  Inv ", "I"):
+            with self.subTest(text=text):
+                self.assertEqual(parse(text), Command("inventory"))
+
+    def test_R7_inventory_with_extra_words_is_unknown(self):
+        """R7 (AC-R7.1): only the bare inventory words are the command."""
+        for text in ("inventory now", "i keycard"):
+            with self.subTest(text=text):
+                self.assertEqual(parse(text).kind, "unknown")
+
+    def test_R6_R7_item_commands_do_not_change_existing_aliases(self):
+        """R6 (AC-R6.1) and R7 (AC-R7.1): directions and 'go' still parse as before."""
+        self.assertEqual(parse("e"), Command("move", "east"))
+        self.assertEqual(parse("go east"), Command("move", "east"))
+        self.assertFalse(is_go_attempt(parse("take keycard")))
 
 
 if __name__ == "__main__":

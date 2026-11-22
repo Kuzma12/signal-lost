@@ -19,7 +19,11 @@ _COMMAND_ALIASES = {
     "quit": "quit", "q": "quit", "exit": "quit",
     "map": "map", "m": "map",
     "scan": "scan", "sc": "scan",
+    "inventory": "inventory", "inv": "inventory", "i": "inventory",
 }
+
+# Verbs followed by an item name (spec.md Section 3.9).
+_ITEM_VERBS = {"take": "take", "get": "take", "drop": "drop"}
 
 _GO = "go"
 
@@ -29,9 +33,11 @@ class Command:
     """A parsed player command.
 
     ``kind`` is one of ``"move"``, ``"help"``, ``"look"``, ``"quit"``,
-    ``"map"``, ``"scan"``, ``"empty"``, or ``"unknown"``. ``arg`` is the direction for a move,
-    the text the player typed (trimmed) for unknown input, and ``None``
-    otherwise.
+    ``"map"``, ``"scan"``, ``"take"``, ``"drop"``, ``"inventory"``,
+    ``"empty"``, or ``"unknown"``. ``arg`` is the direction for a move, the
+    item name (lower-case, single-spaced) for take/drop, the text the
+    player typed (trimmed) for unknown input, and ``None`` otherwise
+    (including take/drop with no item name).
     """
 
     kind: str
@@ -56,6 +62,10 @@ def parse(text):
             return Command("move", _DIRECTION_ALIASES[word])
         if word in _COMMAND_ALIASES:
             return Command(_COMMAND_ALIASES[word])
+
+    if words[0] in _ITEM_VERBS:
+        item = " ".join(words[1:]) or None
+        return Command(_ITEM_VERBS[words[0]], item)
 
     if len(words) == 2 and words[0] == _GO and words[1] in _DIRECTION_ALIASES:
         return Command("move", _DIRECTION_ALIASES[words[1]])
