@@ -3,14 +3,15 @@ Instructions for future development sessions on this project.
 ## Project
 
 A terminal text adventure for a CSC 299 final project, built in rounds.
-Requirements live in `problem.md` (R1-R10) and the design in `spec.md`.
-**Rounds 1-5 are complete and requirements R1-R10 work:** navigation, room
-info, oxygen, win/loss (R1-R3), the ship map (R4), the room scanner (R5),
-collecting items (R6), the inventory with `drop` (R7), health and hazard
-rooms (R8), healing with `use medkit` (R9), and the locked Escape Pod
-opened with `use keycard` (R10). Round 5 also **revised R3**: winning now
-requires unlocking the pod door first (spec Section 4.6 keeps the original
-R3 wording for history).
+Requirements live in `problem.md` (R1-R12) and the design in `spec.md`.
+**All six rounds are complete and requirements R1-R12 work:** navigation,
+room info, oxygen, win/loss (R1-R3), the ship map (R4), the room scanner
+(R5), collecting items (R6), the inventory with `drop` (R7), health and
+hazard rooms (R8), healing with `use medkit` (R9), the locked Escape Pod
+opened with `use keycard` (R10), saving the game (R11), and loading it
+(R12). Round 5 also **revised R3**: winning now requires unlocking the pod
+door first (spec Section 4.6 keeps the original R3 wording for history).
+There are 390 tests. The latest handoff is `handoff-round-6.md`.
 
 ## Commands
 
@@ -29,7 +30,7 @@ python3 -m unittest discover -s tests -v     # run all tests (must be 100% passi
   Python 3.10+.
 - **Tests first.** Write or update `unittest` tests before implementing a
   feature. Every test name starts with the requirement it checks
-  (`test_R1_…` through `test_R10_…`, and future `R11…`), and its
+  (`test_R1_…` through `test_R12_…`, and future `R13…`), and its
   docstring cites the acceptance-criterion id from the spec (e.g. `AC-R3.6`).
 - **No failing or skipped tests** before a commit. Don't use `skip` decorators.
 - **Small Git commits** with messages that explain what changed and why.
@@ -45,7 +46,7 @@ python3 -m unittest discover -s tests -v     # run all tests (must be 100% passi
   criteria word for word and add "(Round N)" notes pointing to the new
   criteria. Change an existing test only when the revision changes its
   expected result, and explain each change in the commit message.
-- **New requirements (R6+) must be written by the user** and added to
+- **New requirements (R13+) must be written by the user** and added to
   `problem.md` under a `## Round N requirements` heading. Never write them
   yourself. Commit and push the requirements before starting development,
   then extend `spec.md` for the round before writing tests.
@@ -56,8 +57,9 @@ python3 -m unittest discover -s tests -v     # run all tests (must be 100% passi
 |--------|------|----------|
 | `signal_lost/world.py` | `Room` dataclass (incl. `clue`, starting `items`, and `hazard` flag), `build_ship()`, `STARTING_ITEMS`, `HAZARD_ROOMS`, `MAP_GRID`, `START_ROOM`, `ESCAPE_ROOM`, `KEYCARD_READER`, `DIRECTIONS` | know about oxygen, health, locks, or I/O |
 | `signal_lost/parser.py` | `parse(text) -> Command`, `is_go_attempt()` | change game state |
-| `signal_lost/game.py` | `Game.handle(command) -> TurnResult`, `Status`, `Outcome`, oxygen and health constants (`STARTING_HEALTH`, `HAZARD_DAMAGE`, `MEDKIT`, `MEDKIT_HEALING`, `KEYCARD`), live state (`health`, `room_items`, `inventory`, `pod_locked`) | call `print()` or `input()` (a test enforces this) |
-| `signal_lost/cli.py` | `run(input_fn, output_fn)`, all text rendering and messages, `render_room()`, `render_map()`, `render_inventory()`, `render_hazard()`, `MAP_LABELS`, `HAZARD_MESSAGES`, lock messages (`LOCKED_MESSAGE`, `UNLOCKED_MESSAGE`, `ALREADY_UNLOCKED_MESSAGE`, `WRONG_PLACE_MESSAGE`) | contain game rules |
+| `signal_lost/game.py` | `Game.handle(command) -> TurnResult`, `Status`, `Outcome`, oxygen and health constants (`STARTING_HEALTH`, `HAZARD_DAMAGE`, `MEDKIT`, `MEDKIT_HEALING`, `KEYCARD`, `SAVE_VERSION`), live state (`health`, `room_items`, `inventory`, `pod_locked`), `save_path`, `save_data()`, `_check_save()` | call `print()` or `input()` (a test enforces this) |
+| `signal_lost/savefile.py` | `SAVE_FILE` (`signal_lost_save.json`), `write(path, data)` (temp file + `os.replace`), `read(path)`, `NoSaveFile`, `DamagedSave` | import game modules or know any game rule |
+| `signal_lost/cli.py` | `run(input_fn, output_fn, save_path)`, all text rendering and messages, `render_room()`, `render_map()`, `render_inventory()`, `render_hazard()`, `MAP_LABELS`, `HAZARD_MESSAGES`, lock messages (`LOCKED_MESSAGE`, `UNLOCKED_MESSAGE`, `ALREADY_UNLOCKED_MESSAGE`, `WRONG_PLACE_MESSAGE`), save/load messages (`SAVED_MESSAGE`, `SAVE_FAILED_MESSAGE`, `LOADED_MESSAGE`, `NO_SAVE_MESSAGE`, `DAMAGED_SAVE_MESSAGE`) | contain game rules |
 | `main.py` | calls `run()` | contain logic |
 
 - `Game.handle` dispatches with a `kind -> method` dict. To add a command,
@@ -75,6 +77,18 @@ python3 -m unittest discover -s tests -v     # run all tests (must be 100% passi
   `Game.inventory`; every item is always in exactly one of them, except a
   used medkit, which is in neither (tests check). The keycard is never used
   up. See `docs/decisions/0003.md` and `0004.md`.
+- **Save/load (ADR 0006):** `save` and `load` are ordinary commands in
+  the dispatch dict and never touch `_move()`. `game.py` decides what is
+  saved (`save_data()`) and what is valid (`_check_save()`); `savefile.py`
+  only does JSON and files. Every check runs **before** any state changes,
+  then the state is replaced in one assignment (all-or-nothing). Any new
+  piece of game state must be added to `save_data()`, `_check_save()`,
+  `full_state()` in `tests/test_game.py`, and spec 3.12, and the
+  `SAVE_VERSION` question must be decided.
+- **Tests never write a save into the project.** Pass a temporary folder
+  as `save_path` (`Game(save_path=…)`, `Session(…, save_path=…)`, or run
+  `main.py` with a temporary `cwd`). `.gitignore` ignores
+  `signal_lost_save.json` and its `.tmp` file.
 - `render_room(..., health=None)` only draws the health line when `health`
   is passed. Every real display passes it (tests check); a new caller must too.
 - The game is deterministic (no randomness) so whole playthroughs can be tested.
@@ -83,8 +97,9 @@ python3 -m unittest discover -s tests -v     # run all tests (must be 100% passi
 ## Key rule decisions
 
 - Oxygen starts at 12; only a **successful** move costs 1. `look`, `map`,
-  `scan`, `take`, `drop`, `inventory`, `use`, `help`, blocked moves, the
-  locked pod door, and unknown commands are free.
+  `scan`, `take`, `drop`, `inventory`, `use`, `save`, `load`, `help`,
+  blocked moves, the locked pod door, and unknown commands are free. A
+  successful `load` sets oxygen and health to the saved values.
 - Arriving at the Escape Pod with **0** oxygen after the move is a **loss**
   (spec 4.3). Every route is an even number of moves, so move 12 into the pod loses.
 - Health starts at 10 (also the max). Every successful move into the
@@ -115,8 +130,16 @@ python3 -m unittest discover -s tests -v     # run all tests (must be 100% passi
   corrected to point toward the keycard on the Bridge, without saying
   where or how it is used. Moving the keycard or changing those rooms
   means revisiting the clues and `Round5ClueTests` in `test_world.py`.
+- **Save/load (R11, R12, user's choices):** one slot,
+  `signal_lost_save.json` in the current working directory, overwritten
+  without asking. `save`/`load` are single words with no aliases (`s` is
+  south, `l` is look); `save game` is unknown. `load` prints `Game
+  loaded.` then the room display (as `look`). No save →
+  `There is no saved game to load.`; a damaged file (bad JSON or any of
+  the ten checks in spec 3.12) → the damaged message and nothing changes.
+  The file is versioned (`"version": 1`); a different version is damaged.
 - See `docs/decisions/` for architecture decision records (Y-statement format).
-  Add a new numbered record (next is `0006.md`) for each significant decision.
+  Add a new numbered record (next is `0007.md`) for each significant decision.
 - Changing the ship layout means updating the room table and `MAP_GRID`
   (`world.py`) and `MAP_LABELS` (`cli.py`, plus its copy in `test_cli.py`)
   together. Map cells are 11 chars and labels at most 8, so 4 columns = 50.
@@ -130,8 +153,8 @@ python3 -m unittest discover -s tests -v     # run all tests (must be 100% passi
 
 ## Future rounds (not implemented yet)
 
-Save/load (and any further puzzles or locked doors) are not built. See spec
-Section 9 for where they plug in. Save/load must include `visited`,
-`room_items`, `inventory`, `health`, and `pod_locked` as well as `room_id`,
-`oxygen`, and `status`. The Round 5 lock is a single flag for the pod door
-only; don't generalize it unless a requirement asks.
+The six planned rounds are done. Any further work (more puzzles or locked
+doors, more save slots, rewording the wide Round 1 lines) needs a new
+user-written requirement or the user's OK first. The Round 5 lock is a
+single flag for the pod door only; don't generalize it unless a
+requirement asks. Open issues are listed in `handoff-round-6.md` Section 7.
