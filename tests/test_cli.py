@@ -27,6 +27,16 @@ SHORTEST_ROOMS = ["medical_bay", "central_corridor", "engineering",
 WANDER_LOSS = ["n", "s"] * 6
 TWELVE_MOVE_POD = ["n", "s", "n", "s", "n", "s", "n", "e", "s", "s", "e", "e"]
 
+# (Round 5) The pod is locked until the keycard is used at the Airlock
+# Junction, so the routes above stop at its door. These routes win or
+# reach the pod with the keycard (spec.md Sections 3.11 and 7.2).
+KEYCARD_ROUTE = ["n", "e", "n", "take keycard", "s", "s", "s", "e",
+                 "use keycard", "e"]
+KEYCARD_ROOMS = ["medical_bay", "central_corridor", "bridge", "central_corridor",
+                 "engineering", "cargo_hold", "airlock_junction", "escape_pod"]
+KEYCARD_TWELVE_MOVE_POD = ["n", "s", "n", "s", "n", "e", "n", "take keycard",
+                           "s", "s", "s", "e", "use keycard", "e"]
+
 WIN_BANNER = "*** YOU WIN ***"
 LOSS_BANNER = "*** GAME OVER: YOU LOST ***"
 QUIT_MESSAGE = "You close your eyes and let the ship drift. Transmission ended."
@@ -69,6 +79,12 @@ class Session:
 def squash(text):
     """Collapse all whitespace so wrapped descriptions can be compared."""
     return " ".join(text.split())
+
+
+def move_turns(route, rooms):
+    """Pair the turn index of each move in ``route`` with the room it enters."""
+    indexes = [i for i, text in enumerate(route, start=1) if len(text) == 1]
+    return list(zip(indexes, rooms))
 
 
 def exits_line(room):
@@ -148,22 +164,22 @@ class RoomDisplayTests(unittest.TestCase):
 class MovementOutputTests(unittest.TestCase):
     def test_R2_each_move_shows_the_new_room_name(self):
         """R2 (AC-R2.2): after every move the new room's name is printed."""
-        turns = Session(SHORTEST_ROUTE).turns()
-        for index, room_id in enumerate(SHORTEST_ROOMS, start=1):
+        turns = Session(KEYCARD_ROUTE).turns()
+        for index, room_id in move_turns(KEYCARD_ROUTE, KEYCARD_ROOMS):
             with self.subTest(move=index):
                 self.assertIn(f"  {ROOMS[room_id].name.upper()}", turns[index])
 
     def test_R2_each_move_shows_the_new_room_description(self):
         """R2 (AC-R2.3): after every move the new room's description is printed."""
-        turns = Session(SHORTEST_ROUTE).turns()
-        for index, room_id in enumerate(SHORTEST_ROOMS, start=1):
+        turns = Session(KEYCARD_ROUTE).turns()
+        for index, room_id in move_turns(KEYCARD_ROUTE, KEYCARD_ROOMS):
             with self.subTest(move=index):
                 self.assertIn(squash(ROOMS[room_id].description), squash(turns[index]))
 
     def test_R2_each_move_shows_the_correct_exits(self):
         """R2 (AC-R2.4): after every move the Exits line matches the room's real exits."""
-        turns = Session(SHORTEST_ROUTE).turns()
-        for index, room_id in enumerate(SHORTEST_ROOMS, start=1):
+        turns = Session(KEYCARD_ROUTE).turns()
+        for index, room_id in move_turns(KEYCARD_ROUTE, KEYCARD_ROOMS):
             with self.subTest(move=index):
                 self.assertIn(exits_line(ROOMS[room_id]), turns[index].splitlines())
 
@@ -237,27 +253,27 @@ class InvalidInputOutputTests(unittest.TestCase):
 
 class EndOfGameOutputTests(unittest.TestCase):
     def test_R3_winning_playthrough_prints_win_message_after_pod_info(self):
-        """R3 (AC-R3.4) and R2 (AC-R2.5): pod room info, then the win banner."""
-        session = Session(SHORTEST_ROUTE)
+        """R3 (AC-R3.10; was AC-R3.4) and R2 (AC-R2.5): pod room info, then the win banner."""
+        session = Session(KEYCARD_ROUTE)
         text = session.text
         self.assertIn("ESCAPE POD", text)
         self.assertIn(">>> LAUNCH SEQUENCE INITIATED <<<", text)
-        self.assertIn("You escaped with 6 oxygen to spare.", text)
+        self.assertIn("You escaped with 4 oxygen to spare.", text)
         self.assertIn(WIN_BANNER, text)
         self.assertLess(text.index("  ESCAPE POD"), text.index(WIN_BANNER))
         self.assertEqual(session.game.status, Status.WON)
 
     def test_R2_escape_pod_info_is_shown_on_the_winning_move(self):
         """R2 (AC-R2.5): the pod's description and exits appear on the winning move."""
-        final = Session(SHORTEST_ROUTE).turns()[-1]
+        final = Session(KEYCARD_ROUTE).turns()[-1]
         pod = ROOMS["escape_pod"]
         self.assertIn(squash(pod.description), squash(final))
         self.assertIn(exits_line(pod), final.splitlines())
-        self.assertIn("[ OXYGEN: 6/12 ]", final)
+        self.assertIn("[ OXYGEN: 4/12 ]", final)
 
     def test_R3_game_stops_reading_input_after_winning(self):
         """R3 (AC-R3.7): leftover input is never read once the player wins."""
-        session = Session(SHORTEST_ROUTE + ["look", "w"])
+        session = Session(KEYCARD_ROUTE + ["look", "w"])
         self.assertEqual(session.remaining, ["look", "w"])
         self.assertEqual(session.text.count(WIN_BANNER), 1)
 
@@ -275,8 +291,8 @@ class EndOfGameOutputTests(unittest.TestCase):
         self.assertEqual(session.game.status, Status.LOST)
 
     def test_R3_reaching_the_pod_with_zero_oxygen_prints_loss_not_win(self):
-        """R3 (AC-R3.6) and R2 (AC-R2.5): pod info is shown, but the result is a loss."""
-        session = Session(TWELVE_MOVE_POD)
+        """R3 (AC-R3.6, AC-R3.12) and R2 (AC-R2.5): pod info is shown, but the result is a loss."""
+        session = Session(KEYCARD_TWELVE_MOVE_POD)
         final = session.turns()[-1]
         self.assertIn("  ESCAPE POD", final)
         self.assertIn(LOSS_BANNER, final)
@@ -334,8 +350,8 @@ class ArchitectureAndEntryPointTests(unittest.TestCase):
         )
 
     def test_R3_main_py_plays_a_winning_game_and_exits_zero(self):
-        """R3 (AC-G.1, AC-R3.4): 'python3 main.py' runs with no setup and can be won."""
-        completed = self._run_main("\n".join(SHORTEST_ROUTE) + "\n")
+        """R3 (AC-G.1, AC-R3.10): 'python3 main.py' runs with no setup and can be won."""
+        completed = self._run_main("\n".join(KEYCARD_ROUTE) + "\n")
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn(WIN_BANNER, completed.stdout)
         self.assertEqual(completed.stderr, "")
@@ -504,21 +520,21 @@ class ScanOutputTests(unittest.TestCase):
 
 
 class Round2PlaythroughTests(unittest.TestCase):
-    def test_R4_R5_winning_with_map_and_scan_still_leaves_six_oxygen(self):
-        """R4 (AC-R4.6) and R5 (AC-R5.4): free commands don't change the shortest win."""
+    def test_R4_R5_winning_with_map_and_scan_still_leaves_four_oxygen(self):
+        """R4 (AC-R4.6) and R5 (AC-R5.4), with R3 (AC-R3.11): free commands don't change the shortest win."""
         inputs = []
-        for direction in SHORTEST_ROUTE:
-            inputs += ["map", "scan", direction]
+        for text in KEYCARD_ROUTE:
+            inputs += ["map", "scan", text]
         session = Session(inputs)
         self.assertIn(WIN_BANNER, session.text)
-        self.assertIn("You escaped with 6 oxygen to spare.", session.text)
-        self.assertEqual(session.game.oxygen, 6)
+        self.assertIn("You escaped with 4 oxygen to spare.", session.text)
+        self.assertEqual(session.game.oxygen, 4)
 
     def test_R4_R5_main_py_accepts_map_and_scan(self):
         """R4 (AC-R4.1) and R5 (AC-R5.1), with AC-G.1: the real entry point runs both."""
         completed = subprocess.run(
             [sys.executable, "main.py"],
-            input="map\nscan\n" + "\n".join(SHORTEST_ROUTE) + "\n",
+            input="map\nscan\n" + "\n".join(KEYCARD_ROUTE) + "\n",
             capture_output=True, text=True, cwd=PROJECT_ROOT, timeout=10,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
@@ -699,14 +715,15 @@ class ItemHelpAndWidthTests(unittest.TestCase):
 
 
 class Round3PlaythroughTests(unittest.TestCase):
-    def test_R6_R7_collecting_items_on_the_way_still_wins_with_six_oxygen(self):
-        """R6 (AC-R6.6) and R7 (AC-R7.6): items don't change the shortest win."""
-        inputs = ["take flashlight", "n", "take medkit", "i", "e", "s",
-                  "take repair kit", "drop medkit", "s", "e", "inventory", "e"]
+    def test_R6_R7_collecting_items_on_the_way_still_wins_with_four_oxygen(self):
+        """R6 (AC-R6.6, Round 5 note) and R7 (AC-R7.6): items don't change the shortest keycard win."""
+        inputs = ["take flashlight", "n", "take medkit", "i", "e", "n",
+                  "take keycard", "s", "s", "take repair kit", "drop medkit",
+                  "s", "e", "inventory", "use keycard", "e"]
         session = Session(inputs)
         self.assertIn(WIN_BANNER, session.text)
-        self.assertIn("You escaped with 6 oxygen to spare.", session.text)
-        self.assertEqual(session.game.inventory, ["flashlight", "repair kit"])
+        self.assertIn("You escaped with 4 oxygen to spare.", session.text)
+        self.assertEqual(session.game.inventory, ["flashlight", "keycard", "repair kit"])
 
     def test_R6_R7_main_py_accepts_item_commands(self):
         """R6 (AC-R6.1) and R7 (AC-R7.1), with AC-G.1: the real entry point runs them."""
@@ -761,7 +778,7 @@ class HealthDisplayTests(unittest.TestCase):
 
     def test_R8_final_displays_show_health(self):
         """R8 (AC-R8.2): the win, oxygen-loss, and death displays show health."""
-        cases = [(SHORTEST_ROUTE, "[ HEALTH: 8/10 ]"),
+        cases = [(KEYCARD_ROUTE, "[ HEALTH: 8/10 ]"),
                  (WANDER_LOSS, "[ HEALTH: 10/10 ]"),
                  (REACTOR_DEATH, "[ HEALTH: 0/10 ]")]
         for inputs, gauge in cases:
@@ -812,9 +829,9 @@ class HazardOutputTests(unittest.TestCase):
         self.assertNotIn("HAZARD", "\n".join(session.turns()[1:7]))
 
     def test_R8_shortest_win_shows_the_hazard_then_wins_with_8_health(self):
-        """R8 (AC-R8.8): the player escapes without healing."""
-        session = Session(SHORTEST_ROUTE)
-        self.assertIn(HAZARD_HEADER, session.turns()[4])
+        """R8 (AC-R8.8, Round 5 note): the player escapes without healing, using the keycard."""
+        session = Session(KEYCARD_ROUTE)
+        self.assertIn(HAZARD_HEADER, session.turns()[7])   # the Cargo Hold
         self.assertIn(WIN_BANNER, session.text)
         self.assertEqual(session.game.health, 8)
 
@@ -835,8 +852,8 @@ class DeathOutputTests(unittest.TestCase):
         self.assertEqual(session.game.status, Status.LOST)
 
     def test_R8_oxygen_loss_still_shows_the_oxygen_ending(self):
-        """R8 (AC-R8.7) with R3 (AC-R3.6): reaching the pod on move 12 is unchanged."""
-        final = Session(TWELVE_MOVE_POD).turns()[-1]
+        """R8 (AC-R8.7) with R3 (AC-R3.6, AC-R3.12): reaching the unlocked pod on move 12 is unchanged."""
+        final = Session(KEYCARD_TWELVE_MOVE_POD).turns()[-1]
         self.assertIn(">>> OXYGEN DEPLETED <<<", final)
         self.assertNotIn(DEATH_HEADER, final)
 

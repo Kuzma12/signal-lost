@@ -8,7 +8,14 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
-from .world import DIRECTIONS, ESCAPE_ROOM, START_ROOM, Room, build_ship
+from .world import (
+    DIRECTIONS,
+    ESCAPE_ROOM,
+    KEYCARD_READER,
+    START_ROOM,
+    Room,
+    build_ship,
+)
 
 STARTING_OXYGEN = 12
 OXYGEN_PER_MOVE = 1
@@ -16,6 +23,7 @@ STARTING_HEALTH = 10   # also the most health the player can have
 HAZARD_DAMAGE = 2      # health lost on every entry into a hazard room
 MEDKIT = "medkit"
 MEDKIT_HEALING = 4
+KEYCARD = "keycard"     # unlocks the Escape Pod door at KEYCARD_READER
 
 
 class Status(Enum):
@@ -44,7 +52,11 @@ class Outcome(Enum):
     HEALED = "healed"        # used the medkit and got health back
     FULL_HEALTH = "full_health"  # tried the medkit at full health; kept it
     CANT_USE = "cant_use"    # used a carried item that does nothing
-    WON = "won"              # moved into the escape pod with oxygen left
+    LOCKED = "locked"        # tried to enter the Escape Pod while it is locked
+    UNLOCKED = "unlocked"    # used the keycard at the reader; the pod is open
+    ALREADY_UNLOCKED = "already_unlocked"  # keycard at the reader, pod already open
+    WRONG_PLACE = "wrong_place"  # used the keycard away from the reader
+    WON = "won"              # moved into the unlocked escape pod with oxygen left
     LOST = "lost"            # moved and oxygen hit zero
     DIED = "died"            # moved into a hazard and health hit zero
     QUIT = "quit"            # player gave up
@@ -68,8 +80,8 @@ class TurnResult:
 
 class Game:
     """Holds the player's current room, oxygen, health, game status, the
-    rooms visited so far, the items in each room, and the player's
-    inventory."""
+    rooms visited so far, the items in each room, the player's
+    inventory, and whether the Escape Pod door is still locked."""
 
     def __init__(self, rooms=None):
         self.rooms = rooms if rooms is not None else build_ship()
@@ -84,6 +96,9 @@ class Game:
         self.room_items = {room_id: list(room.items)
                            for room_id, room in self.rooms.items()}
         self.inventory = []
+        # The Escape Pod door starts locked; once unlocked with the keycard
+        # it stays unlocked (spec.md Section 3.11).
+        self.pod_locked = True
         self._handlers = {
             "move": self._move,
             "look": self._look,
@@ -128,6 +143,10 @@ class Game:
         destination = self.room.exits.get(direction)
         if destination is None:
             return self._result(Outcome.BLOCKED)
+        # The lock is checked before the room changes, so a refused move
+        # costs no oxygen or health and isn't recorded as visited.
+        if destination == ESCAPE_ROOM and self.pod_locked:
+            return self._result(Outcome.LOCKED)
 
         # Turn resolution order from spec.md Section 4.2 (with the Round 4
         # health step from Section 3.10).
@@ -195,6 +214,8 @@ class Game:
             return self._result(Outcome.INVALID)
         if item not in self.inventory:
             return self._result(Outcome.NOT_CARRIED, item=item)
+        if item == KEYCARD:
+            return self._use_keycard()
         if item != MEDKIT:
             return self._result(Outcome.CANT_USE, item=item)
         if self.health >= STARTING_HEALTH:
@@ -203,6 +224,16 @@ class Game:
         self.health += healed
         self.inventory.remove(item)  # a used medkit is gone for good
         return self._result(Outcome.HEALED, item=item, healed=healed)
+
+    def _use_keycard(self):
+        """Unlock the Escape Pod door at the reader (spec.md Section 3.11).
+        The keycard is never used up."""
+        if self.room_id != KEYCARD_READER:
+            return self._result(Outcome.WRONG_PLACE, item=KEYCARD)
+        if not self.pod_locked:
+            return self._result(Outcome.ALREADY_UNLOCKED, item=KEYCARD)
+        self.pod_locked = False
+        return self._result(Outcome.UNLOCKED, item=KEYCARD)
 
     def _quit(self, command):
         self.status = Status.QUIT

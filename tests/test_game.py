@@ -1,6 +1,6 @@
 """Game rule tests for signal_lost.game.
 
-Every test name starts with the requirement it checks (R1-R9), and
+Every test name starts with the requirement it checks (R1-R10), and
 its docstring names the acceptance criterion from spec.md Section 6.
 Each test builds a fresh Game, so no state is shared between tests.
 """
@@ -10,6 +10,7 @@ from collections import deque
 
 from signal_lost.game import (
     HAZARD_DAMAGE,
+    KEYCARD,
     MEDKIT,
     MEDKIT_HEALING,
     OXYGEN_PER_MOVE,
@@ -21,7 +22,13 @@ from signal_lost.game import (
     TurnResult,
 )
 from signal_lost.parser import Command
-from signal_lost.world import DIRECTIONS, ESCAPE_ROOM, START_ROOM, build_ship
+from signal_lost.world import (
+    DIRECTIONS,
+    ESCAPE_ROOM,
+    KEYCARD_READER,
+    START_ROOM,
+    build_ship,
+)
 
 # Scripted paths from spec.md Section 7.2.
 SHORTEST_ROUTE = ["north", "east", "south", "south", "east", "east"]
@@ -33,6 +40,27 @@ TWELVE_MOVE_POD = [
 ]
 WANDER_LOSS = ["north", "south"] * 6
 
+# (Round 5) The routes above walk straight into the Escape Pod, which is
+# now locked, so they stop at the door (AC-R3.9). Winning needs the keycard.
+
+# Keycard routes from spec.md Sections 3.11 and 7.2. Each step is a
+# direction or "<verb> <item>".
+KEYCARD_ROUTE = ["north", "east", "north", "take keycard", "south", "south",
+                 "south", "east", "use keycard", "east"]
+KEYCARD_REACTOR_ROUTE = ["north", "east", "north", "take keycard", "south",
+                         "south", "east", "south", "use keycard", "east"]
+KEYCARD_TEN_MOVE_WIN = ["north", "south", "north", "east", "north",
+                        "take keycard", "south", "south", "south", "east",
+                        "use keycard", "east"]
+KEYCARD_TWELVE_MOVE_POD = ["north", "south", "north", "south", "north", "east",
+                           "north", "take keycard", "south", "south", "south",
+                           "east", "use keycard", "east"]
+# Picks up the keycard and stops at the reader, still locked.
+TO_READER_WITH_KEYCARD = KEYCARD_ROUTE[:-2]
+# Straight to the reader without the keycard (the old shortest route, minus
+# the final step into the pod).
+TO_READER = ["north", "east", "south", "south", "east"]
+
 
 def move(direction):
     return Command("move", direction)
@@ -41,6 +69,18 @@ def move(direction):
 def play(game, directions):
     """Send each direction to the game and return the list of TurnResults."""
     return [game.handle(move(direction)) for direction in directions]
+
+
+def step(text):
+    """Turn a script step into a Command: a direction, or '<verb> <item>'."""
+    if text in DIRECTIONS:
+        return move(text)
+    verb, _, name = text.partition(" ")
+    return Command(verb, name or None)
+
+
+def run_script(game, steps):
+    return [game.handle(step(text)) for text in steps]
 
 
 def path_to(room_id):
@@ -89,12 +129,17 @@ class MovementTests(unittest.TestCase):
         self.assertEqual(game.room.id, "cryo_bay")
 
     def test_R1_every_exit_on_the_shortest_route_moves_the_player(self):
-        """R1 (AC-R1.1): each step of the shortest route lands in the expected room."""
+        """R1 (AC-R1.1), with R3 (AC-R3.11): each move of the shortest (keycard) route lands in the expected room."""
         game = Game()
-        expected = ["medical_bay", "central_corridor", "engineering",
-                    "cargo_hold", "airlock_junction", "escape_pod"]
-        for direction, room_id in zip(SHORTEST_ROUTE, expected):
+        expected = ["medical_bay", "central_corridor", "bridge", "central_corridor",
+                    "engineering", "cargo_hold", "airlock_junction", "escape_pod"]
+        directions = [text for text in KEYCARD_ROUTE if text in DIRECTIONS]
+        for direction, room_id in zip(directions, expected):
             with self.subTest(direction=direction, room=room_id):
+                if game.room_id == "bridge":
+                    game.handle(take(KEYCARD))
+                if game.room_id == KEYCARD_READER:
+                    game.handle(use(KEYCARD))
                 game.handle(move(direction))
                 self.assertEqual(game.room.id, room_id)
 
@@ -210,27 +255,27 @@ class BlockedAndInvalidTests(unittest.TestCase):
 
 
 class WinningTests(unittest.TestCase):
-    def test_R3_shortest_route_wins_with_six_oxygen(self):
-        """R3 (AC-R3.4, AC-R3.8): n, e, s, s, e, e wins with 6 oxygen left."""
+    def test_R3_shortest_route_wins_with_four_oxygen(self):
+        """R3 (AC-R3.10, AC-R3.11; was AC-R3.4, AC-R3.8): the 8-move keycard route wins with 4 oxygen left."""
         game = Game()
-        results = play(game, SHORTEST_ROUTE)
+        results = run_script(game, KEYCARD_ROUTE)
         self.assertEqual(results[-1].outcome, Outcome.WON)
         self.assertEqual(results[-1].room.id, ESCAPE_ROOM)
         self.assertEqual(game.status, Status.WON)
-        self.assertEqual(game.oxygen, 6)
+        self.assertEqual(game.oxygen, 4)
         self.assertTrue(game.is_over)
 
-    def test_R3_reactor_core_route_also_wins_with_six_oxygen(self):
-        """R3 (AC-R3.4, AC-R3.8): the second 6-move route through the Reactor Core wins."""
+    def test_R3_reactor_core_route_also_wins_with_four_oxygen(self):
+        """R3 (AC-R3.10, AC-R3.11; was AC-R3.4, AC-R3.8): the second 8-move route through the Reactor Core wins."""
         game = Game()
-        play(game, REACTOR_ROUTE)
+        run_script(game, KEYCARD_REACTOR_ROUTE)
         self.assertEqual(game.status, Status.WON)
-        self.assertEqual(game.oxygen, 6)
+        self.assertEqual(game.oxygen, 4)
 
     def test_R3_ten_move_route_wins_with_two_oxygen(self):
-        """R3 (AC-R3.4): reaching the pod on move 10 wins with 2 oxygen."""
+        """R3 (AC-R3.12; was AC-R3.4): entering the unlocked pod on move 10 wins with 2 oxygen."""
         game = Game()
-        results = play(game, TEN_MOVE_WIN)
+        results = run_script(game, KEYCARD_TEN_MOVE_WIN)
         self.assertEqual(results[-1].outcome, Outcome.WON)
         self.assertEqual(game.status, Status.WON)
         self.assertEqual(game.oxygen, 2)
@@ -245,9 +290,10 @@ class WinningTests(unittest.TestCase):
 
 class LosingTests(unittest.TestCase):
     def test_R3_twelve_move_pod_arrival_is_a_loss(self):
-        """R3 (AC-R3.6): entering the pod on the move that hits 0 oxygen is a loss."""
+        """R3 (AC-R3.6, AC-R3.12): entering the unlocked pod on the move that hits 0 oxygen is a loss."""
         game = Game()
-        results = play(game, TWELVE_MOVE_POD)
+        results = run_script(game, KEYCARD_TWELVE_MOVE_POD)
+        self.assertEqual(results[-2].outcome, Outcome.UNLOCKED)
         self.assertEqual(results[-1].outcome, Outcome.LOST)
         self.assertEqual(results[-1].room.id, ESCAPE_ROOM)
         self.assertEqual(game.status, Status.LOST)
@@ -273,14 +319,14 @@ class LosingTests(unittest.TestCase):
 
 class GameOverTests(unittest.TestCase):
     def test_R3_no_state_changes_after_winning(self):
-        """R3 (AC-R3.7): once WON, further commands change nothing."""
+        """R3 (AC-R3.7, AC-R3.10): once WON, further commands change nothing."""
         game = Game()
-        play(game, SHORTEST_ROUTE)
+        run_script(game, KEYCARD_ROUTE)
         result = game.handle(move("west"))
         self.assertEqual(result.outcome, Outcome.GAME_OVER)
         self.assertEqual(result.oxygen_used, 0)
         self.assertEqual(game.room.id, ESCAPE_ROOM)
-        self.assertEqual(game.oxygen, 6)
+        self.assertEqual(game.oxygen, 4)
         self.assertEqual(game.status, Status.WON)
 
     def test_R3_no_state_changes_after_losing(self):
@@ -344,11 +390,11 @@ class VisitedRoomTests(unittest.TestCase):
         self.assertEqual(game.visited, {"cryo_bay", "medical_bay"})
 
     def test_R4_winning_move_records_the_escape_pod(self):
-        """R4 (AC-R4.2): the final room entered is recorded too."""
+        """R4 (AC-R4.2), with R3 (AC-R3.10): the final room entered is recorded too."""
         game = Game()
-        play(game, SHORTEST_ROUTE)
+        run_script(game, KEYCARD_ROUTE)
         self.assertIn(ESCAPE_ROOM, game.visited)
-        self.assertEqual(len(game.visited), 7)
+        self.assertEqual(len(game.visited), 8)   # the keycard detour adds the Bridge
 
     def test_R4_turn_result_carries_a_snapshot_of_visited_rooms(self):
         """R4 (AC-R4.2): the result the CLI draws from can't change afterwards."""
@@ -394,7 +440,8 @@ class MapCommandTests(unittest.TestCase):
     def test_R4_map_is_ignored_after_the_game_ends(self):
         """R4 (AC-R4.6) and R3 (AC-R3.7): once the game is over, 'map' does nothing."""
         game = Game()
-        play(game, SHORTEST_ROUTE)
+        run_script(game, KEYCARD_ROUTE)
+        self.assertEqual(game.status, Status.WON)
         self.assertEqual(game.handle(MAP).outcome, Outcome.GAME_OVER)
 
 
@@ -444,24 +491,24 @@ class ScanCommandTests(unittest.TestCase):
 
 
 class Round2DoesNotChangeRound1RulesTests(unittest.TestCase):
-    def test_R4_R5_shortest_route_still_wins_with_six_oxygen_using_map_and_scan(self):
-        """R4 (AC-R4.6) and R5 (AC-R5.4): free commands at every step don't change the outcome."""
+    def test_R4_R5_shortest_route_still_wins_with_four_oxygen_using_map_and_scan(self):
+        """R4 (AC-R4.6) and R5 (AC-R5.4), with R3 (AC-R3.11): free commands at every step don't change the outcome."""
         game = Game()
-        for direction in SHORTEST_ROUTE:
+        for text in KEYCARD_ROUTE:
             game.handle(MAP)
             game.handle(SCAN)
             game.handle(SCAN)
-            game.handle(move(direction))
+            game.handle(step(text))
         self.assertEqual(game.status, Status.WON)
-        self.assertEqual(game.oxygen, 6)
+        self.assertEqual(game.oxygen, 4)
 
     def test_R4_R5_twelve_move_pod_arrival_is_still_a_loss_with_map_and_scan(self):
-        """R4 (AC-R4.6) and R5 (AC-R5.4), with R3 (AC-R3.6): the boundary rule is unchanged."""
+        """R4 (AC-R4.6) and R5 (AC-R5.4), with R3 (AC-R3.6, AC-R3.12): the boundary rule is unchanged."""
         game = Game()
-        for direction in TWELVE_MOVE_POD:
+        for text in KEYCARD_TWELVE_MOVE_POD:
             game.handle(SCAN)
             game.handle(MAP)
-            game.handle(move(direction))
+            game.handle(step(text))
         self.assertEqual(game.status, Status.LOST)
 
 
@@ -599,19 +646,19 @@ class TakeTests(unittest.TestCase):
         self.assertEqual(game.status, Status.PLAYING)
         self.assertEqual(game.oxygen, 1)
 
-    def test_R6_collecting_items_on_the_shortest_route_still_wins_with_six(self):
-        """R6 (AC-R6.6): items don't change the win; 6 moves still leave 6 oxygen."""
+    def test_R6_collecting_items_on_the_shortest_route_still_wins_with_four(self):
+        """R6 (AC-R6.6, Round 5 note): items don't change the win; 8 keycard moves leave 4 oxygen."""
         game = Game()
         game.handle(take("flashlight"))
-        for direction in SHORTEST_ROUTE:
-            result = game.handle(move(direction))
+        for text in KEYCARD_ROUTE:
+            result = game.handle(step(text))
             if game.room_id == "medical_bay":
                 game.handle(take("medkit"))
             if game.room_id == "engineering":
                 game.handle(take("repair kit"))
         self.assertEqual(result.outcome, Outcome.WON)
-        self.assertEqual(game.oxygen, 6)
-        self.assertEqual(game.inventory, ["flashlight", "medkit", "repair kit"])
+        self.assertEqual(game.oxygen, 4)
+        self.assertEqual(game.inventory, ["flashlight", "medkit", "keycard", "repair kit"])
 
     def test_R6_take_is_ignored_after_the_game_ends(self):
         """R6 (AC-R6.6) and R3 (AC-R3.7): no item changes once the game is over."""
@@ -869,30 +916,32 @@ class HazardDamageTests(unittest.TestCase):
         self.assertEqual(results[-1].outcome, Outcome.MOVED)
         self.assertEqual(game.status, Status.PLAYING)
 
-    def test_R8_shortest_routes_win_with_8_health_and_6_oxygen(self):
-        """R8 (AC-R8.8): both 6-move routes escape without healing."""
-        for route in (SHORTEST_ROUTE, REACTOR_ROUTE):
+    def test_R8_shortest_routes_win_with_8_health_and_4_oxygen(self):
+        """R8 (AC-R8.8, Round 5 note) with R3 (AC-R3.11) and R10 (AC-R10.8): both 8-move keycard routes escape without healing."""
+        for route in (KEYCARD_ROUTE, KEYCARD_REACTOR_ROUTE):
             with self.subTest(route=route):
                 game = Game()
-                result = play(game, route)[-1]
+                result = run_script(game, route)[-1]
+                self.assertEqual(sum(1 for text in route if text in DIRECTIONS), 8)
                 self.assertEqual(result.outcome, Outcome.WON)
                 self.assertEqual(game.health, 8)
-                self.assertEqual(game.oxygen, 6)
+                self.assertEqual(game.oxygen, 4)
 
     def test_R8_a_ten_move_route_through_both_hazards_still_wins(self):
-        """R8 (AC-R8.8): reactor then cargo then reactor (3 hazards) still wins."""
+        """R8 (AC-R8.8) with R3 (AC-R3.10): reactor then cargo (2 hazards) with the keycard still wins."""
         game = Game()
-        route = TO_REACTOR + ["south", "west", "east", "north", "south", "east"]
-        result = play(game, route)[-1]
+        route = ["north", "east", "north", "take keycard", "south", "south",
+                 "east", "south", "west", "east", "use keycard", "east"]
+        result = run_script(game, route)[-1]
         self.assertEqual(result.outcome, Outcome.WON)
-        self.assertEqual(game.health, 4)
+        self.assertEqual(game.health, 6)
         self.assertEqual(game.oxygen, 2)
 
     def test_R8_earlier_boundary_rules_are_unchanged(self):
-        """R8 (AC-R8.5) with R3 (AC-R3.5, AC-R3.6): oxygen losses still say LOST."""
-        for route in (TWELVE_MOVE_POD, WANDER_LOSS):
+        """R8 (AC-R8.5) with R3 (AC-R3.5, AC-R3.6, AC-R3.12): oxygen losses still say LOST."""
+        for route in (KEYCARD_TWELVE_MOVE_POD, WANDER_LOSS):
             with self.subTest(route=route):
-                result = play(Game(), route)[-1]
+                result = run_script(Game(), route)[-1]
                 self.assertEqual(result.outcome, Outcome.LOST)
 
 
@@ -1045,6 +1094,272 @@ class UseOtherItemsTests(unittest.TestCase):
         locations = all_item_locations(game)
         self.assertEqual(len(locations), 3)
         self.assertEqual(set(locations), ALL_ITEMS - {MEDKIT})
+
+
+# ----- Round 5: keycard, locked escape pod, revised R3 (R10, R3) -----------
+
+
+
+def lock_snapshot(game):
+    """Everything a refused or free command must leave alone."""
+    return health_snapshot(game) + (game.pod_locked,)
+
+
+class LockedPodTests(unittest.TestCase):
+    def test_R10_new_game_starts_with_the_pod_locked(self):
+        """R10 (AC-R10.1): the Escape Pod door is locked at the start."""
+        self.assertEqual(KEYCARD, "keycard")
+        self.assertTrue(Game().pod_locked)
+
+    def test_R10_locked_pod_refuses_the_move(self):
+        """R10 (AC-R10.2): east from the Airlock Junction is LOCKED and changes nothing."""
+        game = Game()
+        play(game, TO_READER)
+        before = lock_snapshot(game)
+        result = game.handle(move("east"))
+        self.assertEqual(result.outcome, Outcome.LOCKED)
+        self.assertEqual(result.room.id, KEYCARD_READER)
+        self.assertEqual(result.oxygen_used, 0)
+        self.assertEqual(result.damage, 0)
+        self.assertEqual(lock_snapshot(game), before)
+        self.assertNotIn(ESCAPE_ROOM, game.visited)
+
+    def test_R10_locked_pod_costs_no_oxygen_or_health(self):
+        """R10 (AC-R10.2): after 5 moves and one hazard, the refusal leaves 7 oxygen and 8 health."""
+        game = Game()
+        play(game, TO_READER)
+        game.handle(move("east"))
+        self.assertEqual(game.oxygen, 7)
+        self.assertEqual(game.health, 8)
+        self.assertEqual(game.status, Status.PLAYING)
+
+    def test_R10_locked_pod_refuses_every_time(self):
+        """R10 (AC-R10.2): trying the door again and again stays free."""
+        game = Game()
+        play(game, TO_READER)
+        before = lock_snapshot(game)
+        for attempt in range(15):
+            with self.subTest(attempt=attempt):
+                self.assertEqual(game.handle(move("east")).outcome, Outcome.LOCKED)
+                self.assertEqual(lock_snapshot(game), before)
+
+    def test_R10_carrying_the_keycard_does_not_open_the_door_by_itself(self):
+        """R10 (AC-R10.3): the keycard must be used, not just carried."""
+        game = Game()
+        run_script(game, TO_READER_WITH_KEYCARD)
+        self.assertIn(KEYCARD, game.inventory)
+        self.assertEqual(game.handle(move("east")).outcome, Outcome.LOCKED)
+        self.assertEqual(game.room_id, KEYCARD_READER)
+
+    def test_R10_other_exits_from_the_reader_room_still_work(self):
+        """R10 (AC-R10.2): only the pod door is locked."""
+        game = Game()
+        play(game, TO_READER)
+        self.assertEqual(game.handle(move("north")).outcome, Outcome.MOVED)
+        self.assertEqual(game.room_id, "reactor_core")
+
+    def test_R10_blocked_moves_at_the_reader_are_still_blocked(self):
+        """R10 (AC-R10.2) with R1 (AC-R1.4): south has no exit, so it is BLOCKED, not LOCKED."""
+        game = Game()
+        play(game, TO_READER)
+        self.assertEqual(game.handle(move("south")).outcome, Outcome.BLOCKED)
+
+
+class UseKeycardTests(unittest.TestCase):
+    def setUp(self):
+        self.game = Game()
+        run_script(self.game, TO_READER_WITH_KEYCARD)
+
+    def test_R10_use_keycard_at_the_reader_unlocks_the_pod(self):
+        """R10 (AC-R10.3): 'use keycard' at the Airlock Junction unlocks the door."""
+        result = self.game.handle(use(KEYCARD))
+        self.assertEqual(result.outcome, Outcome.UNLOCKED)
+        self.assertEqual(result.item, KEYCARD)
+        self.assertFalse(self.game.pod_locked)
+
+    def test_R10_after_unlocking_the_pod_can_be_entered(self):
+        """R10 (AC-R10.3): the next move east enters the Escape Pod."""
+        self.game.handle(use(KEYCARD))
+        result = self.game.handle(move("east"))
+        self.assertEqual(result.room.id, ESCAPE_ROOM)
+        self.assertIn(ESCAPE_ROOM, self.game.visited)
+
+    def test_R10_unlocking_is_free_and_keeps_the_keycard(self):
+        """R10 (AC-R10.4): no oxygen, health, room, status, or visited change; keycard stays."""
+        before = health_snapshot(self.game)
+        result = self.game.handle(use(KEYCARD))
+        self.assertEqual(health_snapshot(self.game), before)
+        self.assertEqual(result.oxygen_used, 0)
+        self.assertEqual(result.damage, 0)
+        self.assertEqual(result.healed, 0)
+        self.assertEqual(self.game.inventory, [KEYCARD])
+        self.assertEqual(result.inventory, (KEYCARD,))
+
+    def test_R10_keycard_does_not_work_in_other_rooms(self):
+        """R10 (AC-R10.5): carried keycard used elsewhere is WRONG_PLACE and changes nothing."""
+        game = Game()
+        run_script(game, ["north", "east", "north", "take keycard"])
+        rooms_tried = []
+        for direction in ("south", "south", "east"):   # Corridor, Engineering, Reactor
+            game.handle(move(direction))
+            rooms_tried.append(game.room_id)
+            before = lock_snapshot(game)
+            with self.subTest(room=game.room_id):
+                result = game.handle(use(KEYCARD))
+                self.assertEqual(result.outcome, Outcome.WRONG_PLACE)
+                self.assertEqual(result.item, KEYCARD)
+                self.assertEqual(lock_snapshot(game), before)
+                self.assertTrue(game.pod_locked)
+        self.assertNotIn(KEYCARD_READER, rooms_tried)
+
+    def test_R10_keycard_does_not_work_on_the_bridge_where_it_is_found(self):
+        """R10 (AC-R10.5): the Bridge is not the reader room either."""
+        game = Game()
+        run_script(game, ["north", "east", "north", "take keycard"])
+        self.assertEqual(game.handle(use(KEYCARD)).outcome, Outcome.WRONG_PLACE)
+        self.assertTrue(game.pod_locked)
+
+    def test_R10_keycard_not_carried_cannot_be_used_at_the_reader(self):
+        """R10 (AC-R10.6): without the keycard the door stays locked."""
+        game = Game()
+        play(game, TO_READER)
+        before = lock_snapshot(game)
+        result = game.handle(use(KEYCARD))
+        self.assertEqual(result.outcome, Outcome.NOT_CARRIED)
+        self.assertEqual(result.item, KEYCARD)
+        self.assertEqual(lock_snapshot(game), before)
+        self.assertTrue(game.pod_locked)
+
+    def test_R10_dropped_keycard_cannot_be_used(self):
+        """R10 (AC-R10.6): a keycard left on the floor is not carried."""
+        self.game.handle(drop(KEYCARD))
+        self.assertEqual(self.game.handle(use(KEYCARD)).outcome, Outcome.NOT_CARRIED)
+        self.assertTrue(self.game.pod_locked)
+
+    def test_R10_door_stays_unlocked_after_dropping_the_keycard(self):
+        """R10 (AC-R10.7): unlocking is permanent, even without the keycard."""
+        self.game.handle(use(KEYCARD))
+        self.game.handle(drop(KEYCARD))
+        play(self.game, ["west", "east"])   # leave and come back
+        self.assertFalse(self.game.pod_locked)
+        self.assertEqual(self.game.handle(move("east")).outcome, Outcome.WON)
+
+    def test_R10_using_the_keycard_again_says_already_unlocked(self):
+        """R10 (AC-R10.7): a second use at the reader changes nothing."""
+        self.game.handle(use(KEYCARD))
+        before = lock_snapshot(self.game)
+        result = self.game.handle(use(KEYCARD))
+        self.assertEqual(result.outcome, Outcome.ALREADY_UNLOCKED)
+        self.assertEqual(result.item, KEYCARD)
+        self.assertEqual(lock_snapshot(self.game), before)
+
+    def test_R10_keycard_elsewhere_after_unlocking_still_does_not_work_there(self):
+        """R10 (AC-R10.5, AC-R10.7): away from the reader it is WRONG_PLACE either way."""
+        self.game.handle(use(KEYCARD))
+        self.game.handle(move("west"))
+        self.assertEqual(self.game.handle(use(KEYCARD)).outcome, Outcome.WRONG_PLACE)
+        self.assertFalse(self.game.pod_locked)
+
+    def test_R10_use_keycard_is_ignored_after_the_game_ends(self):
+        """R10 (AC-R10.4) with R3 (AC-R3.7): nothing happens once the game is over."""
+        self.game.handle(Command("quit"))
+        self.assertEqual(self.game.handle(use(KEYCARD)).outcome, Outcome.GAME_OVER)
+        self.assertTrue(self.game.pod_locked)
+
+    def test_R10_each_game_has_its_own_lock(self):
+        """R10 (AC-R10.1): unlocking in one game doesn't unlock another."""
+        self.game.handle(use(KEYCARD))
+        self.assertTrue(Game().pod_locked)
+
+
+class Round5OtherItemsTests(unittest.TestCase):
+    def test_R9_R10_flashlight_and_repair_kit_still_cannot_be_used_at_the_reader(self):
+        """R9 (AC-R9.7) with R10: only the keycard works at the reader."""
+        game = Game()
+        run_script(game, ["take flashlight", "north", "east", "south",
+                          "take repair kit", "south", "east"])
+        self.assertEqual(game.room_id, KEYCARD_READER)
+        for name in ("flashlight", "repair kit"):
+            with self.subTest(item=name):
+                self.assertEqual(game.handle(use(name)).outcome, Outcome.CANT_USE)
+        self.assertTrue(game.pod_locked)
+
+    def test_R9_R10_items_are_still_conserved_after_unlocking(self):
+        """R9 (AC-R9.7) with R10 (AC-R10.4): the keycard is never used up."""
+        game = Game()
+        run_script(game, ["take flashlight", "north", "take medkit", "east",
+                          "north", "take keycard", "use keycard", "south",
+                          "south", "take repair kit", "south", "east",
+                          "use keycard", "use keycard", "drop keycard"])
+        self.assertFalse(game.pod_locked)
+        locations = all_item_locations(game)
+        self.assertEqual(len(locations), 4)
+        self.assertEqual(set(locations), ALL_ITEMS)
+
+
+class RevisedEscapeTests(unittest.TestCase):
+    def test_R3_reaching_the_pod_without_unlocking_is_not_a_win(self):
+        """R3 (AC-R3.9): the old 6-move route stops at the locked door."""
+        game = Game()
+        results = play(game, SHORTEST_ROUTE)
+        self.assertEqual(results[-1].outcome, Outcome.LOCKED)
+        self.assertEqual(game.room_id, KEYCARD_READER)
+        self.assertEqual(game.status, Status.PLAYING)
+        self.assertNotEqual(game.status, Status.WON)
+
+    def test_R3_no_route_without_the_keycard_ever_wins(self):
+        """R3 (AC-R3.9): every old pod route, without 'use keycard', ends without a win."""
+        old_pod_routes = [SHORTEST_ROUTE, REACTOR_ROUTE, TEN_MOVE_WIN, TWELVE_MOVE_POD]
+        for route in old_pod_routes:
+            with self.subTest(route=route):
+                game = Game()
+                results = play(game, route)
+                self.assertEqual(results[-1].outcome, Outcome.LOCKED)
+                self.assertNotIn(ESCAPE_ROOM, game.visited)
+                self.assertNotEqual(game.status, Status.WON)
+
+    def test_R3_carrying_the_keycard_without_using_it_never_wins(self):
+        """R3 (AC-R3.9): the door must be unlocked, not just the keycard carried."""
+        game = Game()
+        route = [text for text in KEYCARD_ROUTE if text != "use keycard"]
+        results = run_script(game, route)
+        self.assertEqual(results[-1].outcome, Outcome.LOCKED)
+        self.assertEqual(game.status, Status.PLAYING)
+
+    def test_R3_moves_before_entering_the_unlocked_pod_keep_playing(self):
+        """R3 (AC-R3.10): status stays PLAYING until the pod is entered."""
+        game = Game()
+        for result in run_script(game, KEYCARD_ROUTE[:-1]):
+            self.assertNotIn(result.outcome, (Outcome.WON, Outcome.LOST, Outcome.DIED))
+        self.assertEqual(game.status, Status.PLAYING)
+
+    def test_R3_no_winning_route_is_shorter_than_eight_moves(self):
+        """R3 (AC-R3.11): the keycard detour makes 8 moves the minimum."""
+        rooms = build_ship()
+        # Replay every route of up to 7 moves, taking and using the keycard
+        # whenever possible, so each route gets its best chance to win.
+        for length in range(1, 8):
+            for path in self._paths(rooms, length):
+                game = Game()
+                for direction in path:
+                    if game.room_id == "bridge":
+                        game.handle(take(KEYCARD))
+                    if game.room_id == KEYCARD_READER:
+                        game.handle(use(KEYCARD))
+                    game.handle(move(direction))
+                self.assertNotEqual(game.status, Status.WON, path)
+
+    @staticmethod
+    def _paths(rooms, length):
+        """Every list of ``length`` directions from the start, entering the
+        pod only on the last step."""
+        paths = [([], START_ROOM)]
+        for _ in range(length):
+            paths = [(path + [d], dest) for path, room in paths
+                     for d, dest in rooms[room].exits.items()
+                     if dest != ESCAPE_ROOM or len(path) == length - 1]
+        return [path for path, _ in paths]
+
 
 
 if __name__ == "__main__":
