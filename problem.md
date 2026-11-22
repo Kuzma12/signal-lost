@@ -39,3 +39,13 @@ I want the player to be able to find different items around the spaceship, like 
 R7: Inventory System
 
 I want the player to be able to check what they are carrying by typing "inventory". The game should show all the items they collected, and if they don't have anything, it should tell them their inventory is empty. I also want the player to be able to drop an item in the room they are currently in. That item should stay there until they pick it up again. Checking inventory or dropping items shouldn't use oxygen.
+
+## Round 4 requirements
+
+R8: Health and Hazards
+
+I want to make the spaceship more dangerous by adding a health system. The player should start with 10 health points, and their health should be shown along with their oxygen. Some rooms, like the Reactor Core and Cargo Hold, should be dangerous and take away 2 health points whenever the player enters them. If the player goes back into those rooms, they should take damage again. Moving into a dangerous room should still use the normal 1 oxygen. If their health reaches zero, the game should end and tell them they didn't survive. I also want the player to still be able to escape without having to heal, as long as they're careful.
+
+R9: Medkit Healing
+
+I want the medkit from Round 3 to actually be useful. When the player has a medkit in their inventory, they should be able to type "use medkit" to restore 4 health points. Their health shouldn't go above the starting 10 points, and the medkit should disappear from their inventory after they successfully use it. If they try using a medkit they don't have, the game should tell them. If they're already at full health, the medkit shouldn't be wasted. Using a medkit shouldn't cost oxygen, and the other items should still work the same way as before.
