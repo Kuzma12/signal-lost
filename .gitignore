@@ -42,3 +42,7 @@ transcript*.txt
 *.swp
 .DS_Store
 Thumbs.db
+
+# Signal Lost save file (Round 6) and its temporary file
+signal_lost_save.json
+signal_lost_save.json.tmp
