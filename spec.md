@@ -1226,7 +1226,7 @@ Example scripted paths:
   Junction with the lock message, with 7 oxygen and 8 health.
 - **(Round 6) Save and come back:** `n, e, n, take keycard, s, save, s, s,
   load, s, s, e, use keycard, e` wins with 4 oxygen and 8 health: the
-  `load` puts the player back in the Central Corridor with 9 oxygen.
+  `load` puts the player back in the Central Corridor with 8 oxygen.
 
 ### 7.3 Running Tests
 

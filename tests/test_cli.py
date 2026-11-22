@@ -1,6 +1,6 @@
 """Terminal output and full-playthrough tests for signal_lost.cli.
 
-Every test name starts with the requirement it checks (R1-R10), and
+Every test name starts with the requirement it checks (R1-R12), and
 its docstring names the acceptance criterion from spec.md Section 6.
 The CLI is driven by a fake input function (a scripted list of inputs) and
 a fake output function (a list that records every printed block), so no real
@@ -8,8 +8,10 @@ terminal is needed.
 """
 
 import ast
+import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -22,6 +24,7 @@ from signal_lost.cli import (
     run,
 )
 from signal_lost.game import Status
+from signal_lost.savefile import SAVE_FILE
 from signal_lost.world import DIRECTIONS, build_ship
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -52,11 +55,14 @@ QUIT_MESSAGE = "You close your eyes and let the ship drift. Transmission ended."
 class Session:
     """Runs the CLI with scripted input and records everything it does."""
 
-    def __init__(self, inputs, interrupt=None):
+    def __init__(self, inputs, interrupt=None, save_path=None):
         self.remaining = list(inputs)
         self.interrupt = interrupt
         self.events = []  # ("out", text) or ("prompt", text)
-        self.game = run(input_fn=self._input, output_fn=self._output)
+        # (Round 6) Tests that save or load pass a path in a temporary
+        # folder; the others never touch the save file.
+        options = {} if save_path is None else {"save_path": save_path}
+        self.game = run(input_fn=self._input, output_fn=self._output, **options)
 
     def _input(self, prompt=""):
         self.events.append(("prompt", prompt))
@@ -1086,6 +1092,203 @@ class KeycardOutputTests(unittest.TestCase):
     def test_R10_help_still_lists_use(self):
         """R10 (AC-R10.9): 'use <item>' is still in help; no new command."""
         self.assertIn("use <item>", Session(["help"]).turns()[1])
+
+
+# ----- Round 6: saving and loading (R11, R12) ------------------------------
+
+SAVED_TEXT = "Game saved."
+SAVE_FAILED_TEXT = "Save failed: the file could not be written."
+LOADED_TEXT = "Game loaded."
+NO_SAVE_TEXT = "There is no saved game to load."
+DAMAGED_LINES = ["The save file is damaged and can't be loaded.",
+                 "Your current game is unchanged."]
+# From spec.md 7.2: save in the Corridor (8 oxygen), wander, load, and win.
+SAVE_AND_COME_BACK = ["n", "e", "n", "take keycard", "s", "save", "s", "s",
+                      "load", "s", "s", "e", "use keycard", "e"]
+
+
+def answers(session):
+    """Like replies(), without the newline that ends each printed block."""
+    return [turn.rstrip("\n") for turn in replies(session)]
+
+
+class SaveLoadOutputTestCase(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = Path(folder.name)
+        self.path = self.folder / SAVE_FILE
+
+    def session(self, inputs, save_path=None):
+        return Session(inputs, save_path=save_path or self.path)
+
+
+class SaveOutputTests(SaveLoadOutputTestCase):
+    def test_R11_run_saves_to_the_save_file_by_default(self):
+        """R11 (AC-R11.2): the game uses signal_lost_save.json unless told otherwise."""
+        self.assertEqual(Session([]).game.save_path, SAVE_FILE)
+
+    def test_R11_save_prints_game_saved(self):
+        """R11 (AC-R11.4): a successful save is confirmed."""
+        turns = answers(self.session(["save"]))
+        self.assertEqual(turns[1], SAVED_TEXT)
+        self.assertTrue(self.path.is_file())
+
+    def test_R11_save_shows_no_room_display_and_costs_nothing(self):
+        """R11 (AC-R11.3): after saving, look shows the same oxygen and health."""
+        turns = answers(self.session(["n", "look", "save", "look"]))
+        self.assertNotIn("OXYGEN", turns[3])
+        self.assertEqual(turns[4], turns[2])
+
+    def test_R11_saving_writes_the_state_seen_on_screen(self):
+        """R11 (AC-R11.2): the file holds the room and gauges just shown."""
+        self.session(["n", "e", "s", "e", "save"])
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual((data["room"], data["oxygen"], data["health"]),
+                         ("reactor_core", 8, 8))
+
+    def test_R11_unwritable_save_prints_save_failed_and_play_goes_on(self):
+        """R11 (AC-R11.6): a failed save is reported and the game continues."""
+        session = self.session(["save", "n"], save_path=self.folder / "no" / SAVE_FILE)
+        turns = answers(session)
+        self.assertEqual(turns[1], SAVE_FAILED_TEXT)
+        self.assertIn("MEDICAL BAY", turns[2])
+        self.assertEqual(session.game.oxygen, 11)
+
+    def test_R11_save_with_more_words_is_an_unknown_command(self):
+        """R11 (AC-R11.1): there is one slot, so 'save game' isn't a command."""
+        turns = answers(self.session(["save game"]))
+        self.assertIn("Unknown command: 'save game'.", turns[1])
+        self.assertFalse(self.path.exists())
+
+
+class LoadOutputTests(SaveLoadOutputTestCase):
+    def test_R12_load_prints_game_loaded_then_the_room_display(self):
+        """R12 (AC-R12.4): confirmation, a blank line, then the room as 'look'
+        shows it, with items, exits, and both gauges."""
+        self.session(["take flashlight", "n", "drop flashlight", "save"])
+        turns = answers(self.session(["load"]))
+        room = ROOMS["medical_bay"]
+        expected = (LOADED_TEXT + "\n\n"
+                    + render_room(room, 11, items=("medkit", "flashlight"),
+                                  health=10))
+        self.assertEqual(turns[1], expected)
+        self.assertIn("Items here: medkit, flashlight", turns[1])
+        self.assertIn("Exits: east, south", turns[1])
+        self.assertIn("[ OXYGEN: 11/12 ]", turns[1])
+        self.assertIn("[ HEALTH: 10/10 ]", turns[1])
+
+    def test_R12_load_shows_the_restored_health_and_low_oxygen(self):
+        """R12 (AC-R12.4): the gauges show the saved values, warnings included."""
+        script = ["n", "e", "s", "e"] + ["w", "e"] * 3   # Reactor, 2 oxygen, 2 health
+        self.session(script + ["save"])
+        turns = answers(self.session(["load"]))
+        self.assertIn("[ OXYGEN: 2/12 ]  !! LOW OXYGEN !!", turns[1])
+        self.assertIn("[ HEALTH: 2/10 ]", turns[1])
+
+    def test_R12_load_with_no_save_prints_a_message_and_play_goes_on(self):
+        """R12 (AC-R12.6): no save is reported; no crash; nothing changes."""
+        session = self.session(["n", "load", "look"])
+        turns = answers(session)
+        self.assertEqual(turns[2], NO_SAVE_TEXT)
+        self.assertIn("MEDICAL BAY", turns[3])
+        self.assertIn("[ OXYGEN: 11/12 ]", turns[3])
+
+    def test_R12_damaged_save_prints_both_lines_and_keeps_the_game(self):
+        """R12 (AC-R12.7): a damaged file is reported and progress is kept."""
+        self.path.write_text('{"version": 1, "room": "bridge"', encoding="utf-8")
+        session = self.session(["n", "load", "look"])
+        turns = answers(session)
+        self.assertEqual(turns[2].splitlines(), DAMAGED_LINES)
+        self.assertIn("MEDICAL BAY", turns[3])
+        self.assertEqual(session.game.room_id, "medical_bay")
+
+    def test_R12_edited_save_with_extra_oxygen_is_damaged(self):
+        """R12 (AC-R12.7): a hand-edited save can't give 99 oxygen."""
+        self.session(["save"])
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        data["oxygen"] = 99
+        self.path.write_text(json.dumps(data), encoding="utf-8")
+        session = self.session(["load"])
+        self.assertEqual(answers(session)[1].splitlines(), DAMAGED_LINES)
+        self.assertEqual(session.game.oxygen, 12)
+
+    def test_R12_load_with_more_words_is_an_unknown_command(self):
+        """R12 (AC-R12.1): 'load 2' isn't a command."""
+        turns = answers(self.session(["load 2"]))
+        self.assertIn("Unknown command: 'load 2'.", turns[1])
+
+    def test_R12_save_wander_load_and_win(self):
+        """R12 (AC-R12.3): loading returns to the save, and the game is won
+        from there with the usual 4 oxygen."""
+        session = self.session(SAVE_AND_COME_BACK)
+        turns = answers(session)
+        self.assertIn("CENTRAL CORRIDOR", turns[9])
+        self.assertIn("[ OXYGEN: 8/12 ]", turns[9])
+        self.assertEqual(session.game.status, Status.WON)
+        self.assertIn("You escaped with 4 oxygen to spare.", session.text)
+        self.assertIn("[ HEALTH: 8/10 ]", turns[-1])
+
+    def test_R12_map_after_loading_shows_the_saved_explored_rooms(self):
+        """R12 (AC-R12.2): the explored map comes back with the save."""
+        self.session(["n", "e", "n", "save"])
+        turns = answers(self.session(["load", "map"]))
+        self.assertEqual(turns[2], render_map("bridge", {"cryo_bay", "medical_bay",
+                                                         "central_corridor", "bridge"}))
+
+
+class SaveLoadHelpAndWidthTests(SaveLoadOutputTestCase):
+    def test_R11_R12_help_lists_save_and_load(self):
+        """R11 (AC-R11.1) and R12 (AC-R12.1): help shows both commands."""
+        help_lines = Session(["help"]).turns()[1].splitlines()
+        self.assertTrue(any(line.strip().startswith("save ") for line in help_lines))
+        self.assertTrue(any(line.strip().startswith("load ") for line in help_lines))
+
+    def test_R11_R12_all_save_and_load_output_fits_in_50_columns(self):
+        """R11 and R12 (AC-R12.9): help and every save/load message fit.
+        (Wide Round 1 lines such as the intro are checked elsewhere.)"""
+        self.path.write_bytes(b"junk")
+        # help, damaged load, save, move, successful load
+        good = answers(self.session(["help", "load", "save", "n", "load"]))
+        # no save, failed save
+        bad = answers(self.session(["load", "save"],
+                                   save_path=self.folder / "no" / SAVE_FILE))
+        for text in good[1:] + bad[1:]:
+            for line in text.splitlines():
+                with self.subTest(line=line):
+                    self.assertLessEqual(len(line), 50)
+
+
+class SaveLoadEntryPointTests(unittest.TestCase):
+    def _run_main(self, folder, inputs):
+        return subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "main.py")],
+            input="\n".join(inputs) + "\n",
+            capture_output=True, text=True, cwd=folder, timeout=10)
+
+    def test_R12_main_py_saves_in_one_run_and_loads_and_wins_in_the_next(self):
+        """R12 (AC-R12.3, AC-R11.2): the save file in the current folder lets
+        a new run of the program continue the game."""
+        with tempfile.TemporaryDirectory() as folder:
+            first = self._run_main(folder, KEYCARD_ROUTE[:-1] + ["save", "quit"])
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertIn(SAVED_TEXT, first.stdout)
+            self.assertTrue((Path(folder) / SAVE_FILE).is_file())
+
+            second = self._run_main(folder, ["load", "e"])
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertIn(LOADED_TEXT, second.stdout)
+            self.assertIn(WIN_BANNER, second.stdout)
+            self.assertIn("You escaped with 4 oxygen to spare.", second.stdout)
+            self.assertEqual(second.stderr, "")
+
+    def test_R12_main_py_load_with_no_save_does_not_crash(self):
+        """R12 (AC-R12.6): a fresh folder has no save, and that's fine."""
+        with tempfile.TemporaryDirectory() as folder:
+            completed = self._run_main(folder, ["load"])
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn(NO_SAVE_TEXT, completed.stdout)
+            self.assertNotIn("Traceback", completed.stderr)
 
 
 if __name__ == "__main__":

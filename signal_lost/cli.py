@@ -9,6 +9,7 @@ import textwrap
 
 from .game import STARTING_HEALTH, STARTING_OXYGEN, Game, Outcome
 from .parser import is_go_attempt, parse
+from .savefile import SAVE_FILE
 from .world import MAP_GRID, build_ship
 
 WIDTH = 50
@@ -46,6 +47,8 @@ HELP_TEXT = "\n".join([
     "  drop <item>                leave an item here",
     "  inventory  (inv, i)        list what you carry",
     "  use <item>                 use a carried item",
+    "  save                       save your progress",
+    "  load                       load your saved game",
     "  help   (h, ?)              show this list",
     "  quit   (q, exit)           abandon ship",
     "Moving to another room costs 1 oxygen.",
@@ -106,6 +109,14 @@ UNLOCKED_MESSAGE = ("You swipe the keycard. The reader blinks green.\n"
                     "The escape pod door is unlocked.")
 ALREADY_UNLOCKED_MESSAGE = "The escape pod door is already unlocked."
 WRONG_PLACE_MESSAGE = "The keycard doesn't work here."
+
+# Save and load messages (spec.md Section 3.12).
+SAVED_MESSAGE = "Game saved."
+SAVE_FAILED_MESSAGE = "Save failed: the file could not be written."
+LOADED_MESSAGE = "Game loaded."
+NO_SAVE_MESSAGE = "There is no saved game to load."
+DAMAGED_SAVE_MESSAGE = ("The save file is damaged and can't be loaded.\n"
+                        "Your current game is unchanged.")
 
 # Hazard messages (spec.md Section 3.10), shown after entering a hazard room.
 HAZARD_HEADER = "!! HAZARD: -{damage} HEALTH !!"
@@ -300,6 +311,18 @@ def render_result(result, command):
         return ALREADY_UNLOCKED_MESSAGE
     if outcome is Outcome.WRONG_PLACE:
         return WRONG_PLACE_MESSAGE
+    if outcome is Outcome.SAVED:
+        return SAVED_MESSAGE
+    if outcome is Outcome.SAVE_FAILED:
+        return SAVE_FAILED_MESSAGE
+    if outcome is Outcome.LOADED:
+        return (LOADED_MESSAGE + "\n\n"
+                + render_room(result.room, result.oxygen, items=result.items,
+                              health=result.health))
+    if outcome is Outcome.NO_SAVE:
+        return NO_SAVE_MESSAGE
+    if outcome is Outcome.DAMAGED_SAVE:
+        return DAMAGED_SAVE_MESSAGE
     if outcome is Outcome.QUIT:
         return QUIT_MESSAGE
     if outcome is Outcome.INVALID:
@@ -315,13 +338,14 @@ def render_result(result, command):
     return None  # EMPTY and GAME_OVER print nothing
 
 
-def run(input_fn=input, output_fn=print):
+def run(input_fn=input, output_fn=print, save_path=SAVE_FILE):
     """Play one game of Signal Lost and return the finished Game.
 
     ``input_fn`` and ``output_fn`` can be replaced so tests can script
-    the player's input and capture the output.
+    the player's input and capture the output. ``save_path`` is where
+    ``save`` and ``load`` keep the save file (spec.md Section 3.12).
     """
-    game = Game()
+    game = Game(save_path=save_path)
     output_fn(INTRO)
     output_fn(render_room(game.room, game.oxygen, items=game.items_here,
                           health=game.health) + "\n")
