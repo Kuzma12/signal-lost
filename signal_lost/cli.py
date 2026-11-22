@@ -42,6 +42,9 @@ HELP_TEXT = "\n".join([
     "  look   (l)                 describe this room",
     "  map    (m)                 show explored rooms",
     "  scan   (sc)                scan room for clues",
+    "  take <item>  (get)         pick up an item",
+    "  drop <item>                leave an item here",
+    "  inventory  (inv, i)        list what you carry",
     "  help   (h, ?)              show this list",
     "  quit   (q, exit)           abandon ship",
     "Moving to another room costs 1 oxygen.",
@@ -69,6 +72,17 @@ QUIT_MESSAGE = "You close your eyes and let the ship drift. Transmission ended."
 GO_WHERE_MESSAGE = "Go where? Try north, south, east, or west."
 UNKNOWN_MESSAGE = "Unknown command: '{text}'. Type 'help' for a list of commands."
 BLOCKED_MESSAGE = "You can't go {direction} from here."
+
+# Item messages (spec.md Section 3.9).
+ITEMS_HERE_PREFIX = "Items here: "
+TAKEN_MESSAGE = "You take the {item}."
+NOT_HERE_MESSAGE = "There is no '{item}' here."
+TAKE_WHAT_MESSAGE = "Take what?"
+DROPPED_MESSAGE = "You drop the {item}."
+NOT_CARRIED_MESSAGE = "You are not carrying '{item}'."
+DROP_WHAT_MESSAGE = "Drop what?"
+INVENTORY_HEADER = "You are carrying:"
+INVENTORY_EMPTY = "Your inventory is empty."
 
 # Ship map layout (spec.md Section 3.7): 4 cells of 11 characters with
 # 2-character gaps fill exactly WIDTH columns.
@@ -102,17 +116,30 @@ def render_gauge(oxygen, game_over=False):
     return gauge
 
 
-def render_room(room, oxygen, game_over=False):
-    """Format a room the way spec.md Section 3.6 describes."""
-    return "\n".join([
+def render_room(room, oxygen, game_over=False, items=()):
+    """Format a room the way spec.md Section 3.6 describes.
+
+    ``items`` are the items in the room now; when there are any, an
+    ``Items here:`` line goes just before the exits (Section 3.9).
+    """
+    lines = [
         RULE,
         f"  {room.name.upper()}",
         RULE,
         textwrap.fill(room.description, WIDTH),
         "",
-        render_exits(room),
-        render_gauge(oxygen, game_over),
-    ])
+    ]
+    if items:
+        lines.append(textwrap.fill(ITEMS_HERE_PREFIX + ", ".join(items), WIDTH))
+    lines += [render_exits(room), render_gauge(oxygen, game_over)]
+    return "\n".join(lines)
+
+
+def render_inventory(inventory):
+    """List carried items in pickup order, or say there are none."""
+    if not inventory:
+        return INVENTORY_EMPTY
+    return "\n".join([INVENTORY_HEADER, *(f"  - {item}" for item in inventory)])
 
 
 def _map_column(col):
@@ -174,29 +201,46 @@ def render_result(result, command):
     """Turn a TurnResult into the text to show, or None to show nothing."""
     outcome = result.outcome
     if outcome is Outcome.MOVED:
-        return f"You head {command.arg}...\n\n" + render_room(result.room, result.oxygen)
+        return (f"You head {command.arg}...\n\n"
+                + render_room(result.room, result.oxygen, items=result.items))
     if outcome is Outcome.WON:
         return (f"You head {command.arg}...\n\n"
-                + render_room(result.room, result.oxygen, game_over=True)
+                + render_room(result.room, result.oxygen, game_over=True,
+                              items=result.items)
                 + WIN_MESSAGE.format(oxygen=result.oxygen))
     if outcome is Outcome.LOST:
         return (f"You head {command.arg}...\n\n"
-                + render_room(result.room, result.oxygen, game_over=True)
+                + render_room(result.room, result.oxygen, game_over=True,
+                              items=result.items)
                 + LOSS_MESSAGE)
     if outcome is Outcome.BLOCKED:
         return (BLOCKED_MESSAGE.format(direction=command.arg) + "\n"
                 + render_exits(result.room))
     if outcome is Outcome.LOOKED:
-        return render_room(result.room, result.oxygen)
+        return render_room(result.room, result.oxygen, items=result.items)
     if outcome is Outcome.HELP:
         return HELP_TEXT
     if outcome is Outcome.MAPPED:
         return render_map(result.room.id, result.visited)
     if outcome is Outcome.SCANNED:
         return render_scan(result.room)
+    if outcome is Outcome.TAKEN:
+        return TAKEN_MESSAGE.format(item=result.item)
+    if outcome is Outcome.NOT_HERE:
+        return textwrap.fill(NOT_HERE_MESSAGE.format(item=result.item), WIDTH)
+    if outcome is Outcome.DROPPED:
+        return DROPPED_MESSAGE.format(item=result.item)
+    if outcome is Outcome.NOT_CARRIED:
+        return textwrap.fill(NOT_CARRIED_MESSAGE.format(item=result.item), WIDTH)
+    if outcome is Outcome.INVENTORY:
+        return render_inventory(result.inventory)
     if outcome is Outcome.QUIT:
         return QUIT_MESSAGE
     if outcome is Outcome.INVALID:
+        if command.kind == "take":
+            return TAKE_WHAT_MESSAGE
+        if command.kind == "drop":
+            return DROP_WHAT_MESSAGE
         if is_go_attempt(command) or command.kind == "move":
             return GO_WHERE_MESSAGE
         return UNKNOWN_MESSAGE.format(text=command.arg)
@@ -211,7 +255,7 @@ def run(input_fn=input, output_fn=print):
     """
     game = Game()
     output_fn(INTRO)
-    output_fn(render_room(game.room, game.oxygen) + "\n")
+    output_fn(render_room(game.room, game.oxygen, items=game.items_here) + "\n")
 
     while not game.is_over:
         try:

@@ -1,6 +1,6 @@
 """Terminal output and full-playthrough tests for signal_lost.cli.
 
-Every test name starts with the requirement it checks (R1-R5), and
+Every test name starts with the requirement it checks (R1-R7), and
 its docstring names the acceptance criterion from spec.md Section 6.
 The CLI is driven by a fake input function (a scripted list of inputs) and
 a fake output function (a list that records every printed block), so no real
@@ -526,6 +526,200 @@ class Round2PlaythroughTests(unittest.TestCase):
         self.assertIn("[ SCAN: CRYO BAY ]", completed.stdout)
         self.assertIn(WIN_BANNER, completed.stdout)
         self.assertEqual(completed.stderr, "")
+
+
+def response_lines(session, turn):
+    return session.turns()[turn].splitlines()
+
+
+class ItemDisplayTests(unittest.TestCase):
+    def test_R6_starting_room_lists_its_item(self):
+        """R6 (AC-R6.3): the opening Cryo Bay display shows the flashlight."""
+        opening = Session([]).turns()[0].splitlines()
+        self.assertIn("Items here: flashlight", opening)
+        # The items line sits between the blank line and the exits line.
+        index = opening.index("Items here: flashlight")
+        self.assertEqual(opening[index - 1], "")
+        self.assertEqual(opening[index + 1], "Exits: north")
+
+    def test_R6_entering_a_room_lists_its_items(self):
+        """R6 (AC-R6.3): moving into the Medical Bay shows the medkit."""
+        self.assertIn("Items here: medkit", response_lines(Session(["n"]), 1))
+
+    def test_R6_look_lists_the_rooms_items(self):
+        """R6 (AC-R6.3): 'look' shows the current room's items too."""
+        self.assertIn("Items here: flashlight", response_lines(Session(["look"]), 1))
+
+    def test_R6_room_with_no_items_has_no_items_line(self):
+        """R6 (AC-R6.3): empty rooms look exactly as in spec 3.6."""
+        response = Session(["n", "e"]).turns()[2]
+        self.assertIn("CENTRAL CORRIDOR", response)
+        self.assertNotIn("Items here", response)
+
+    def test_R6_taken_item_is_no_longer_listed_in_the_room(self):
+        """R6 (AC-R6.3, AC-R6.4): after taking the flashlight, look shows no items."""
+        session = Session(["take flashlight", "look"])
+        self.assertNotIn("Items here", session.turns()[2])
+
+    def test_R6_render_room_lists_items_passed_in(self):
+        """R6 (AC-R6.3): render_room puts the items line just before the exits."""
+        lines = render_room(ROOMS["cargo_hold"], 9, items=("keycard", "medkit")).splitlines()
+        self.assertEqual(lines[-3], "Items here: keycard, medkit")
+        self.assertEqual(lines[-2], exits_line(ROOMS["cargo_hold"]))
+
+
+class TakeOutputTests(unittest.TestCase):
+    def test_R6_take_prints_confirmation(self):
+        """R6 (AC-R6.4): 'take flashlight' says you take it."""
+        session = Session(["take flashlight"])
+        self.assertEqual(session.turns()[1].strip(), "You take the flashlight.")
+        self.assertEqual(session.game.inventory, ["flashlight"])
+
+    def test_R6_get_and_mixed_case_names_work(self):
+        """R6 (AC-R6.1, AC-R6.7): 'GET  Flashlight' takes the flashlight."""
+        session = Session(["GET  Flashlight"])
+        self.assertEqual(session.turns()[1].strip(), "You take the flashlight.")
+
+    def test_R6_take_multi_word_item_prints_its_full_name(self):
+        """R6 (AC-R6.4): the repair kit is named in full."""
+        session = Session(["n", "e", "s", "take Repair   Kit"])
+        self.assertEqual(session.turns()[4].strip(), "You take the repair kit.")
+
+    def test_R6_take_missing_item_says_it_is_not_here(self):
+        """R6 (AC-R6.5): 'take keycard' in the Cryo Bay says it is not here."""
+        session = Session(["take keycard"])
+        self.assertEqual(session.turns()[1].strip(), "There is no 'keycard' here.")
+        self.assertEqual(session.game.inventory, [])
+
+    def test_R6_partial_name_says_it_is_not_here(self):
+        """R6 (AC-R6.7): 'take kit' in Engineering does not take the repair kit."""
+        session = Session(["n", "e", "s", "take kit"])
+        self.assertEqual(session.turns()[4].strip(), "There is no 'kit' here.")
+
+    def test_R6_take_with_no_name_asks_take_what(self):
+        """R6 (AC-R6.1): bare 'take' or 'get' asks 'Take what?'."""
+        turns = Session(["take", "get"]).turns()
+        self.assertEqual(turns[1].strip(), "Take what?")
+        self.assertEqual(turns[2].strip(), "Take what?")
+
+    def test_R6_take_uses_no_oxygen(self):
+        """R6 (AC-R6.6): taking leaves the gauge at 12."""
+        session = Session(["take flashlight", "look"])
+        self.assertIn("[ OXYGEN: 12/12 ]", session.turns()[2])
+
+
+class InventoryOutputTests(unittest.TestCase):
+    def test_R7_empty_inventory_says_so(self):
+        """R7 (AC-R7.3): with nothing carried, the inventory is empty."""
+        for text in ("inventory", "inv", "i"):
+            with self.subTest(text=text):
+                self.assertEqual(Session([text]).turns()[1].strip(),
+                                 "Your inventory is empty.")
+
+    def test_R7_inventory_lists_items_in_pickup_order(self):
+        """R7 (AC-R7.2): each carried item is listed in the order taken."""
+        session = Session(["n", "take medkit", "s", "take flashlight", "inventory"])
+        self.assertEqual(response_lines(session, 5),
+                         ["You are carrying:", "  - medkit", "  - flashlight"])
+
+    def test_R7_inventory_uses_no_oxygen(self):
+        """R7 (AC-R7.6): checking the inventory is free."""
+        session = Session(["n", "i", "inv", "look"])
+        self.assertIn("[ OXYGEN: 11/12 ]", session.turns()[4])
+
+
+class DropOutputTests(unittest.TestCase):
+    def test_R7_drop_prints_confirmation(self):
+        """R7 (AC-R7.4): dropping a carried item says so."""
+        session = Session(["take flashlight", "drop flashlight"])
+        self.assertEqual(session.turns()[2].strip(), "You drop the flashlight.")
+        self.assertEqual(session.game.inventory, [])
+
+    def test_R7_dropped_item_is_shown_when_returning_to_the_room(self):
+        """R7 (AC-R7.4): drop in the Medical Bay, leave, come back, and it's listed."""
+        session = Session(["take flashlight", "n", "drop flashlight", "e", "w"])
+        self.assertIn("Items here: medkit, flashlight", response_lines(session, 5))
+
+    def test_R7_dropped_item_can_be_taken_again(self):
+        """R7 (AC-R7.4): the dropped item stays until picked up again."""
+        session = Session(["take flashlight", "drop flashlight", "take flashlight", "i"])
+        self.assertEqual(session.turns()[3].strip(), "You take the flashlight.")
+        self.assertIn("  - flashlight", response_lines(session, 4))
+
+    def test_R7_drop_item_not_carried_says_so(self):
+        """R7 (AC-R7.5): dropping something not carried changes nothing."""
+        session = Session(["drop keycard"])
+        self.assertEqual(session.turns()[1].strip(), "You are not carrying 'keycard'.")
+
+    def test_R7_drop_with_no_name_asks_drop_what(self):
+        """R7 (AC-R7.5): bare 'drop' asks 'Drop what?'."""
+        self.assertEqual(Session(["drop"]).turns()[1].strip(), "Drop what?")
+
+    def test_R7_drop_uses_no_oxygen(self):
+        """R7 (AC-R7.6): dropping leaves the gauge unchanged."""
+        session = Session(["n", "take medkit", "drop medkit", "look"])
+        self.assertIn("[ OXYGEN: 11/12 ]", session.turns()[4])
+
+
+class ItemHelpAndWidthTests(unittest.TestCase):
+    def test_R6_R7_help_lists_take_drop_and_inventory(self):
+        """R6 (AC-R6.1) and R7 (AC-R7.1): help mentions every item command."""
+        response = Session(["help"]).turns()[1]
+        for word in ("take", "get", "drop", "inventory", "inv"):
+            with self.subTest(word=word):
+                self.assertIn(word, response)
+
+    def test_R7_help_text_still_fits_in_50_columns(self):
+        """R7 (AC-R7.8): the help list with item commands fits the frame."""
+        for line in Session(["help"]).turns()[1].splitlines():
+            self.assertLessEqual(len(line), 50, line)
+
+    def test_R7_all_four_items_in_one_room_fit_in_50_columns(self):
+        """R7 (AC-R7.8): a long items line wraps inside the frame."""
+        inputs = ["take flashlight", "n", "take medkit", "e", "n", "take keycard",
+                  "s", "s", "take repair kit", "drop flashlight", "drop medkit",
+                  "drop keycard", "drop repair kit", "look"]
+        session = Session(inputs)
+        response = session.turns()[len(inputs)]
+        self.assertIn("ENGINEERING", response)
+        for line in response.splitlines():
+            self.assertLessEqual(len(line), 50, line)
+        self.assertIn("Items here: flashlight, medkit, keycard, repair kit",
+                      squash(response))
+
+    def test_R7_full_inventory_fits_in_50_columns(self):
+        """R7 (AC-R7.8): the inventory list with every item fits the frame."""
+        inputs = ["take flashlight", "n", "take medkit", "e", "n", "take keycard",
+                  "s", "s", "take repair kit", "inventory"]
+        session = Session(inputs)
+        lines = response_lines(session, len(inputs))
+        self.assertEqual(len([line for line in lines if line.startswith("  - ")]), 4)
+        for line in lines:
+            self.assertLessEqual(len(line), 50, line)
+
+
+class Round3PlaythroughTests(unittest.TestCase):
+    def test_R6_R7_collecting_items_on_the_way_still_wins_with_six_oxygen(self):
+        """R6 (AC-R6.6) and R7 (AC-R7.6): items don't change the shortest win."""
+        inputs = ["take flashlight", "n", "take medkit", "i", "e", "s",
+                  "take repair kit", "drop medkit", "s", "e", "inventory", "e"]
+        session = Session(inputs)
+        self.assertIn(WIN_BANNER, session.text)
+        self.assertIn("You escaped with 6 oxygen to spare.", session.text)
+        self.assertEqual(session.game.inventory, ["flashlight", "repair kit"])
+
+    def test_R6_R7_main_py_accepts_item_commands(self):
+        """R6 (AC-R6.1) and R7 (AC-R7.1), with AC-G.1: the real entry point runs them."""
+        completed = subprocess.run(
+            [sys.executable, "main.py"],
+            input="take flashlight\ni\ndrop flashlight\nlook\nq\n",
+            capture_output=True, text=True, cwd=PROJECT_ROOT, timeout=10,
+        )
+        self.assertEqual(completed.returncode, 0)
+        self.assertIn("You take the flashlight.", completed.stdout)
+        self.assertIn("  - flashlight", completed.stdout)
+        self.assertIn("You drop the flashlight.", completed.stdout)
+        self.assertNotIn("Traceback", completed.stderr)
 
 
 if __name__ == "__main__":
