@@ -83,3 +83,35 @@ unlocking the door should no longer count as a win.
 
 This revision replaces the earlier R3 escape
 condition, but the original oxygen rules still apply.
+
+## Round 6 requirements
+
+R11: Saving the Game
+
+I want players to be able to save their game so they don't
+have to start over every time. When they type "save", the
+game should save their progress into a JSON file.
+
+The save should remember which room they're in, their
+oxygen, health, inventory, items left in rooms, and the
+rooms they've already visited. It should also remember
+whether the escape pod has been unlocked.
+
+Saving shouldn't use oxygen or health, and the game
+should tell the player when the save is successful.
+
+R12: Loading the Game
+
+I want players to be able to continue from their saved
+game by typing "load". The game should restore everything
+from the saved file, including their location, inventory,
+health, oxygen, explored map, and escape pod lock.
+
+If there's no saved game, it should tell the player
+instead of crashing. If the save file is damaged, the
+game should handle that without losing the current
+progress.
+
+Loading shouldn't use oxygen or health. I also want
+the game to show the restored room and player status
+so they know everything loaded correctly.
