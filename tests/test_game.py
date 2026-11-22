@@ -1,6 +1,6 @@
 """Game rule tests for signal_lost.game.
 
-Every test name starts with the requirement it checks (R1-R5), and
+Every test name starts with the requirement it checks (R1-R7), and
 its docstring names the acceptance criterion from spec.md Section 6.
 Each test builds a fresh Game, so no state is shared between tests.
 """
@@ -459,6 +459,267 @@ class Round2DoesNotChangeRound1RulesTests(unittest.TestCase):
             game.handle(MAP)
             game.handle(move(direction))
         self.assertEqual(game.status, Status.LOST)
+
+
+def take(name):
+    return Command("take", name)
+
+
+def drop(name):
+    return Command("drop", name)
+
+
+INVENTORY = Command("inventory")
+ALL_ITEMS = {"flashlight", "medkit", "keycard", "repair kit"}
+
+
+def snapshot(game):
+    """The parts of the game that free item commands must not change."""
+    return (game.room_id, game.oxygen, game.status, set(game.visited))
+
+
+def all_item_locations(game):
+    """Every item the game knows about: room contents plus the inventory."""
+    items = [item for room_items in game.room_items.values() for item in room_items]
+    return items + list(game.inventory)
+
+
+class ItemStartTests(unittest.TestCase):
+    def test_R7_new_game_has_an_empty_inventory(self):
+        """R7 (AC-R7.3): the player starts carrying nothing."""
+        game = Game()
+        self.assertEqual(game.inventory, [])
+        self.assertEqual(game.handle(INVENTORY).inventory, ())
+
+    def test_R6_new_game_room_items_match_the_starting_placement(self):
+        """R6 (AC-R6.2): each room's items start as Room.items."""
+        game = Game()
+        for room_id, room in build_ship().items():
+            with self.subTest(room=room_id):
+                self.assertEqual(game.room_items[room_id], list(room.items))
+
+    def test_R6_turn_result_shows_items_in_the_current_room(self):
+        """R6 (AC-R6.3): results carry the current room's items for display."""
+        game = Game()
+        self.assertEqual(game.handle(Command("look")).items, ("flashlight",))
+        self.assertEqual(game.handle(move("north")).items, ("medkit",))
+        self.assertEqual(game.handle(move("east")).items, ())
+
+    def test_R6_each_game_has_its_own_items(self):
+        """R6 (AC-R6.2): taking an item in one game doesn't affect another."""
+        first = Game()
+        first.handle(take("flashlight"))
+        self.assertEqual(Game().room_items["cryo_bay"], ["flashlight"])
+
+
+class TakeTests(unittest.TestCase):
+    def test_R6_take_moves_item_from_room_to_inventory(self):
+        """R6 (AC-R6.4): taking the flashlight removes it from the Cryo Bay."""
+        game = Game()
+        result = game.handle(take("flashlight"))
+        self.assertEqual(result.outcome, Outcome.TAKEN)
+        self.assertEqual(result.item, "flashlight")
+        self.assertEqual(game.inventory, ["flashlight"])
+        self.assertEqual(game.room_items["cryo_bay"], [])
+        self.assertEqual(result.items, ())
+        self.assertEqual(result.inventory, ("flashlight",))
+
+    def test_R6_take_multi_word_item(self):
+        """R6 (AC-R6.4): the repair kit can be taken in Engineering."""
+        game = Game()
+        play(game, path_to("engineering"))
+        result = game.handle(take("repair kit"))
+        self.assertEqual(result.outcome, Outcome.TAKEN)
+        self.assertIn("repair kit", game.inventory)
+
+    def test_R6_take_item_from_another_room_is_not_here(self):
+        """R6 (AC-R6.5): the keycard is on the Bridge, not in the Cryo Bay."""
+        game = Game()
+        before = snapshot(game)
+        result = game.handle(take("keycard"))
+        self.assertEqual(result.outcome, Outcome.NOT_HERE)
+        self.assertEqual(result.item, "keycard")
+        self.assertEqual(game.inventory, [])
+        self.assertEqual(game.room_items["bridge"], ["keycard"])
+        self.assertEqual(snapshot(game), before)
+
+    def test_R6_take_unknown_item_is_not_here(self):
+        """R6 (AC-R6.5): a name that isn't an item changes nothing."""
+        game = Game()
+        result = game.handle(take("banana"))
+        self.assertEqual(result.outcome, Outcome.NOT_HERE)
+        self.assertEqual(game.room_items["cryo_bay"], ["flashlight"])
+        self.assertEqual(game.inventory, [])
+
+    def test_R6_taking_the_same_item_twice_is_not_here(self):
+        """R6 (AC-R6.5): once carried, the item is no longer in the room."""
+        game = Game()
+        game.handle(take("flashlight"))
+        result = game.handle(take("flashlight"))
+        self.assertEqual(result.outcome, Outcome.NOT_HERE)
+        self.assertEqual(game.inventory, ["flashlight"])
+
+    def test_R6_partial_item_name_does_not_match(self):
+        """R6 (AC-R6.7): 'kit' does not take the repair kit."""
+        game = Game()
+        play(game, path_to("engineering"))
+        for name in ("kit", "repair", "repair kits"):
+            with self.subTest(name=name):
+                self.assertEqual(game.handle(take(name)).outcome, Outcome.NOT_HERE)
+        self.assertEqual(game.room_items["engineering"], ["repair kit"])
+
+    def test_R6_take_with_no_name_is_invalid(self):
+        """R6 (AC-R6.1): bare 'take' changes nothing."""
+        game = Game()
+        before = snapshot(game)
+        result = game.handle(take(None))
+        self.assertEqual(result.outcome, Outcome.INVALID)
+        self.assertEqual(game.room_items["cryo_bay"], ["flashlight"])
+        self.assertEqual(snapshot(game), before)
+
+    def test_R6_take_uses_no_oxygen_and_changes_nothing_else(self):
+        """R6 (AC-R6.6): taking is free; room, status, visited unchanged."""
+        game = Game()
+        game.handle(move("north"))
+        before = snapshot(game)
+        result = game.handle(take("medkit"))
+        self.assertEqual(result.oxygen_used, 0)
+        self.assertEqual(snapshot(game), before)
+
+    def test_R6_take_at_one_oxygen_does_not_end_the_game(self):
+        """R6 (AC-R6.6): a free action can't trigger the oxygen loss."""
+        game = Game()
+        play(game, ["north", "south"] * 5 + ["north"])
+        self.assertEqual(game.oxygen, 1)
+        game.handle(take("medkit"))
+        self.assertEqual(game.status, Status.PLAYING)
+        self.assertEqual(game.oxygen, 1)
+
+    def test_R6_collecting_items_on_the_shortest_route_still_wins_with_six(self):
+        """R6 (AC-R6.6): items don't change the win; 6 moves still leave 6 oxygen."""
+        game = Game()
+        game.handle(take("flashlight"))
+        for direction in SHORTEST_ROUTE:
+            result = game.handle(move(direction))
+            if game.room_id == "medical_bay":
+                game.handle(take("medkit"))
+            if game.room_id == "engineering":
+                game.handle(take("repair kit"))
+        self.assertEqual(result.outcome, Outcome.WON)
+        self.assertEqual(game.oxygen, 6)
+        self.assertEqual(game.inventory, ["flashlight", "medkit", "repair kit"])
+
+    def test_R6_take_is_ignored_after_the_game_ends(self):
+        """R6 (AC-R6.6) and R3 (AC-R3.7): no item changes once the game is over."""
+        game = Game()
+        game.handle(Command("quit"))
+        self.assertEqual(game.handle(take("flashlight")).outcome, Outcome.GAME_OVER)
+        self.assertEqual(game.inventory, [])
+
+
+class DropTests(unittest.TestCase):
+    def test_R7_drop_moves_item_from_inventory_to_current_room(self):
+        """R7 (AC-R7.4): a dropped item lands in the room the player is in."""
+        game = Game()
+        game.handle(take("flashlight"))
+        game.handle(move("north"))
+        result = game.handle(drop("flashlight"))
+        self.assertEqual(result.outcome, Outcome.DROPPED)
+        self.assertEqual(result.item, "flashlight")
+        self.assertEqual(game.inventory, [])
+        self.assertEqual(game.room_items["medical_bay"], ["medkit", "flashlight"])
+        self.assertEqual(result.items, ("medkit", "flashlight"))
+        self.assertEqual(result.inventory, ())
+
+    def test_R7_dropped_item_stays_until_taken_again(self):
+        """R7 (AC-R7.4): leave, come back, and the dropped item is still there."""
+        game = Game()
+        game.handle(take("flashlight"))
+        game.handle(move("north"))
+        game.handle(drop("flashlight"))
+        play(game, ["east", "west"])
+        self.assertIn("flashlight", game.handle(Command("look")).items)
+        self.assertEqual(game.handle(take("flashlight")).outcome, Outcome.TAKEN)
+        self.assertEqual(game.inventory, ["flashlight"])
+        self.assertEqual(game.room_items["medical_bay"], ["medkit"])
+
+    def test_R7_drop_item_not_carried_is_not_carried(self):
+        """R7 (AC-R7.5): dropping something you don't have changes nothing."""
+        game = Game()
+        before = snapshot(game)
+        for name in ("flashlight", "keycard", "banana"):
+            with self.subTest(name=name):
+                result = game.handle(drop(name))
+                self.assertEqual(result.outcome, Outcome.NOT_CARRIED)
+                self.assertEqual(result.item, name)
+        self.assertEqual(game.room_items["cryo_bay"], ["flashlight"])
+        self.assertEqual(game.inventory, [])
+        self.assertEqual(snapshot(game), before)
+
+    def test_R7_drop_with_no_name_is_invalid(self):
+        """R7 (AC-R7.5): bare 'drop' changes nothing."""
+        game = Game()
+        game.handle(take("flashlight"))
+        result = game.handle(drop(None))
+        self.assertEqual(result.outcome, Outcome.INVALID)
+        self.assertEqual(game.inventory, ["flashlight"])
+
+    def test_R7_drop_uses_no_oxygen_and_changes_nothing_else(self):
+        """R7 (AC-R7.6): dropping is free; room, status, visited unchanged."""
+        game = Game()
+        game.handle(take("flashlight"))
+        game.handle(move("north"))
+        before = snapshot(game)
+        result = game.handle(drop("flashlight"))
+        self.assertEqual(result.oxygen_used, 0)
+        self.assertEqual(snapshot(game), before)
+
+
+class InventoryTests(unittest.TestCase):
+    def test_R7_inventory_reports_inventory_and_changes_nothing(self):
+        """R7 (AC-R7.6): checking the inventory is free and changes nothing."""
+        game = Game()
+        game.handle(take("flashlight"))
+        before = snapshot(game)
+        result = game.handle(INVENTORY)
+        self.assertEqual(result.outcome, Outcome.INVENTORY)
+        self.assertEqual(result.oxygen_used, 0)
+        self.assertEqual(result.inventory, ("flashlight",))
+        self.assertEqual(snapshot(game), before)
+
+    def test_R7_inventory_keeps_pickup_order(self):
+        """R7 (AC-R7.2): items are listed in the order they were picked up."""
+        game = Game()
+        game.handle(move("north"))
+        game.handle(take("medkit"))
+        game.handle(move("south"))
+        game.handle(take("flashlight"))
+        self.assertEqual(game.handle(INVENTORY).inventory, ("medkit", "flashlight"))
+
+    def test_R7_turn_result_inventory_is_a_snapshot(self):
+        """R7 (AC-R7.2): an old result is not changed by later takes."""
+        game = Game()
+        first = game.handle(INVENTORY)
+        game.handle(take("flashlight"))
+        self.assertEqual(first.inventory, ())
+        self.assertIsInstance(first.inventory, tuple)
+
+    def test_R7_items_are_never_duplicated_or_lost(self):
+        """R7 (AC-R7.7): after any mix of moves, takes, and drops, there are 4 items."""
+        game = Game()
+        script = [
+            take("flashlight"), take("flashlight"), move("north"), take("medkit"),
+            drop("flashlight"), drop("flashlight"), move("east"), drop("medkit"),
+            move("north"), take("keycard"), take("medkit"), move("south"),
+            take("medkit"), move("south"), take("repair kit"), drop("keycard"),
+            drop("repair kit"), take("keycard"), drop("banana"), take(None),
+        ]
+        for step, command in enumerate(script):
+            game.handle(command)
+            with self.subTest(step=step, command=command):
+                locations = all_item_locations(game)
+                self.assertEqual(len(locations), 4)
+                self.assertEqual(set(locations), ALL_ITEMS)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ TurnResult. It never prints or reads input; the CLI does all of that.
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Optional
 
 from .world import DIRECTIONS, ESCAPE_ROOM, START_ROOM, Room, build_ship
 
@@ -31,6 +32,11 @@ class Outcome(Enum):
     HELP = "help"            # asked for the command list
     MAPPED = "mapped"        # asked for the map of visited rooms
     SCANNED = "scanned"      # scanned the current room for a clue
+    TAKEN = "taken"          # picked up an item in the current room
+    NOT_HERE = "not_here"    # tried to take an item that isn't in the room
+    DROPPED = "dropped"      # left a carried item in the current room
+    NOT_CARRIED = "not_carried"  # tried to drop an item not being carried
+    INVENTORY = "inventory"  # asked what the player is carrying
     WON = "won"              # moved into the escape pod with oxygen left
     LOST = "lost"            # moved and oxygen hit zero
     QUIT = "quit"            # player gave up
@@ -44,11 +50,14 @@ class TurnResult:
     oxygen: int
     oxygen_used: int = 0
     visited: frozenset = frozenset()
+    items: tuple = ()        # items in the current room now
+    inventory: tuple = ()    # items carried, in pickup order
+    item: Optional[str] = None  # item named by a take or drop
 
 
 class Game:
-    """Holds the player's current room, oxygen, game status, and the
-    rooms visited so far."""
+    """Holds the player's current room, oxygen, game status, the rooms
+    visited so far, the items in each room, and the player's inventory."""
 
     def __init__(self, rooms=None):
         self.rooms = rooms if rooms is not None else build_ship()
@@ -56,6 +65,11 @@ class Game:
         self.oxygen = STARTING_OXYGEN
         self.status = Status.PLAYING
         self.visited = {START_ROOM}
+        # Every item is in exactly one place: one room's list or the
+        # inventory (spec.md Section 3.9).
+        self.room_items = {room_id: list(room.items)
+                           for room_id, room in self.rooms.items()}
+        self.inventory = []
         self._handlers = {
             "move": self._move,
             "look": self._look,
@@ -63,6 +77,9 @@ class Game:
             "quit": self._quit,
             "map": self._map,
             "scan": self._scan,
+            "take": self._take,
+            "drop": self._drop,
+            "inventory": self._inventory,
             "empty": self._empty,
             "unknown": self._invalid,
         }
@@ -70,6 +87,11 @@ class Game:
     @property
     def room(self):
         return self.rooms[self.room_id]
+
+    @property
+    def items_here(self):
+        """Items in the current room, in display order."""
+        return tuple(self.room_items[self.room_id])
 
     @property
     def is_over(self):
@@ -119,6 +141,30 @@ class Game:
     def _scan(self, command):
         return self._result(Outcome.SCANNED)
 
+    def _take(self, command):
+        item = command.arg
+        if item is None:
+            return self._result(Outcome.INVALID)
+        here = self.room_items[self.room_id]
+        if item not in here:
+            return self._result(Outcome.NOT_HERE, item=item)
+        here.remove(item)
+        self.inventory.append(item)
+        return self._result(Outcome.TAKEN, item=item)
+
+    def _drop(self, command):
+        item = command.arg
+        if item is None:
+            return self._result(Outcome.INVALID)
+        if item not in self.inventory:
+            return self._result(Outcome.NOT_CARRIED, item=item)
+        self.inventory.remove(item)
+        self.room_items[self.room_id].append(item)
+        return self._result(Outcome.DROPPED, item=item)
+
+    def _inventory(self, command):
+        return self._result(Outcome.INVENTORY)
+
     def _quit(self, command):
         self.status = Status.QUIT
         return self._result(Outcome.QUIT)
@@ -129,6 +175,7 @@ class Game:
     def _invalid(self, command):
         return self._result(Outcome.INVALID)
 
-    def _result(self, outcome, oxygen_used=0):
+    def _result(self, outcome, oxygen_used=0, item=None):
         return TurnResult(outcome, self.room, self.oxygen, oxygen_used,
-                          frozenset(self.visited))
+                          frozenset(self.visited), self.items_here,
+                          tuple(self.inventory), item)
