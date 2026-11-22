@@ -29,6 +29,8 @@ class Outcome(Enum):
     EMPTY = "empty"          # blank input
     LOOKED = "looked"        # re-described the current room
     HELP = "help"            # asked for the command list
+    MAPPED = "mapped"        # asked for the map of visited rooms
+    SCANNED = "scanned"      # scanned the current room for a clue
     WON = "won"              # moved into the escape pod with oxygen left
     LOST = "lost"            # moved and oxygen hit zero
     QUIT = "quit"            # player gave up
@@ -41,21 +43,26 @@ class TurnResult:
     room: Room
     oxygen: int
     oxygen_used: int = 0
+    visited: frozenset = frozenset()
 
 
 class Game:
-    """Holds the player's current room, oxygen, and game status."""
+    """Holds the player's current room, oxygen, game status, and the
+    rooms visited so far."""
 
     def __init__(self, rooms=None):
         self.rooms = rooms if rooms is not None else build_ship()
         self.room_id = START_ROOM
         self.oxygen = STARTING_OXYGEN
         self.status = Status.PLAYING
+        self.visited = {START_ROOM}
         self._handlers = {
             "move": self._move,
             "look": self._look,
             "help": self._help,
             "quit": self._quit,
+            "map": self._map,
+            "scan": self._scan,
             "empty": self._empty,
             "unknown": self._invalid,
         }
@@ -87,6 +94,7 @@ class Game:
 
         # Turn resolution order from spec.md Section 4.2.
         self.room_id = destination
+        self.visited.add(destination)
         self.oxygen = max(0, self.oxygen - OXYGEN_PER_MOVE)
 
         if self.room_id == ESCAPE_ROOM and self.oxygen > 0:
@@ -105,6 +113,12 @@ class Game:
     def _help(self, command):
         return self._result(Outcome.HELP)
 
+    def _map(self, command):
+        return self._result(Outcome.MAPPED)
+
+    def _scan(self, command):
+        return self._result(Outcome.SCANNED)
+
     def _quit(self, command):
         self.status = Status.QUIT
         return self._result(Outcome.QUIT)
@@ -116,4 +130,5 @@ class Game:
         return self._result(Outcome.INVALID)
 
     def _result(self, outcome, oxygen_used=0):
-        return TurnResult(outcome, self.room, self.oxygen, oxygen_used)
+        return TurnResult(outcome, self.room, self.oxygen, oxygen_used,
+                          frozenset(self.visited))

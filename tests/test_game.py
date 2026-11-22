@@ -1,6 +1,6 @@
 """Game rule tests for signal_lost.game.
 
-Every test name starts with the requirement it checks (R1, R2, or R3), and
+Every test name starts with the requirement it checks (R1-R5), and
 its docstring names the acceptance criterion from spec.md Section 6.
 Each test builds a fresh Game, so no state is shared between tests.
 """
@@ -308,6 +308,157 @@ class GameOverTests(unittest.TestCase):
         after = game.handle(move("north"))
         self.assertEqual(after.outcome, Outcome.GAME_OVER)
         self.assertEqual(game.room.id, START_ROOM)
+
+
+MAP = Command("map")
+SCAN = Command("scan")
+
+
+class VisitedRoomTests(unittest.TestCase):
+    def test_R4_new_game_has_visited_only_the_start_room(self):
+        """R4 (AC-R4.2): the Cryo Bay counts as visited from the start."""
+        game = Game()
+        self.assertEqual(game.visited, {START_ROOM})
+
+    def test_R4_successful_moves_add_rooms_to_visited(self):
+        """R4 (AC-R4.2): every room entered is recorded."""
+        game = Game()
+        play(game, ["north", "east", "south"])
+        self.assertEqual(game.visited,
+                         {"cryo_bay", "medical_bay", "central_corridor", "engineering"})
+
+    def test_R4_blocked_moves_add_nothing_to_visited(self):
+        """R4 (AC-R4.2): bumping into a wall doesn't count as visiting."""
+        game = Game()
+        play(game, ["east", "south", "west"])
+        self.assertEqual(game.visited, {START_ROOM})
+
+    def test_R4_revisiting_a_room_records_it_once(self):
+        """R4 (AC-R4.7): going back and forth doesn't duplicate rooms."""
+        game = Game()
+        play(game, ["north", "south", "north", "south"])
+        self.assertEqual(game.visited, {"cryo_bay", "medical_bay"})
+
+    def test_R4_winning_move_records_the_escape_pod(self):
+        """R4 (AC-R4.2): the final room entered is recorded too."""
+        game = Game()
+        play(game, SHORTEST_ROUTE)
+        self.assertIn(ESCAPE_ROOM, game.visited)
+        self.assertEqual(len(game.visited), 7)
+
+    def test_R4_turn_result_carries_a_snapshot_of_visited_rooms(self):
+        """R4 (AC-R4.2): the result the CLI draws from can't change afterwards."""
+        game = Game()
+        result = game.handle(MAP)
+        play(game, ["north"])
+        self.assertEqual(result.visited, frozenset({START_ROOM}))
+        self.assertIsInstance(result.visited, frozenset)
+
+
+class MapCommandTests(unittest.TestCase):
+    def test_R4_map_reports_mapped_with_current_room_and_visited(self):
+        """R4 (AC-R4.2, AC-R4.3): 'map' returns MAPPED, the current room, and visited rooms."""
+        game = Game()
+        play(game, ["north", "east"])
+        result = game.handle(MAP)
+        self.assertEqual(result.outcome, Outcome.MAPPED)
+        self.assertEqual(result.room.id, "central_corridor")
+        self.assertEqual(result.visited,
+                         frozenset({"cryo_bay", "medical_bay", "central_corridor"}))
+
+    def test_R4_map_uses_no_oxygen_and_changes_nothing(self):
+        """R4 (AC-R4.6): the map is free and doesn't move the player or end the game."""
+        game = Game()
+        play(game, ["north"])
+        for _ in range(20):
+            result = game.handle(MAP)
+            self.assertEqual(result.oxygen_used, 0)
+        self.assertEqual(game.oxygen, 11)
+        self.assertEqual(game.room.id, "medical_bay")
+        self.assertEqual(game.status, Status.PLAYING)
+        self.assertEqual(game.visited, {"cryo_bay", "medical_bay"})
+
+    def test_R4_map_at_one_oxygen_does_not_end_the_game(self):
+        """R4 (AC-R4.6): checking the map on the last unit of oxygen is safe."""
+        game = Game()
+        play(game, WANDER_LOSS[:11])
+        self.assertEqual(game.oxygen, 1)
+        game.handle(MAP)
+        self.assertEqual(game.oxygen, 1)
+        self.assertEqual(game.status, Status.PLAYING)
+
+    def test_R4_map_is_ignored_after_the_game_ends(self):
+        """R4 (AC-R4.6) and R3 (AC-R3.7): once the game is over, 'map' does nothing."""
+        game = Game()
+        play(game, SHORTEST_ROUTE)
+        self.assertEqual(game.handle(MAP).outcome, Outcome.GAME_OVER)
+
+
+class ScanCommandTests(unittest.TestCase):
+    def test_R5_scan_reports_scanned_with_the_current_room(self):
+        """R5 (AC-R5.3): 'scan' returns SCANNED and the room whose clue to show."""
+        game = Game()
+        play(game, ["north", "east", "south"])
+        result = game.handle(SCAN)
+        self.assertEqual(result.outcome, Outcome.SCANNED)
+        self.assertEqual(result.room.id, "engineering")
+        self.assertEqual(result.room.clue, build_ship()["engineering"].clue)
+
+    def test_R5_scan_uses_no_oxygen_and_changes_nothing(self):
+        """R5 (AC-R5.4): scanning is free and doesn't move the player or end the game."""
+        game = Game()
+        result = game.handle(SCAN)
+        self.assertEqual(result.oxygen_used, 0)
+        self.assertEqual(game.oxygen, STARTING_OXYGEN)
+        self.assertEqual(game.room.id, START_ROOM)
+        self.assertEqual(game.status, Status.PLAYING)
+        self.assertEqual(game.visited, {START_ROOM})
+
+    def test_R5_same_room_can_be_scanned_repeatedly_with_the_same_clue(self):
+        """R5 (AC-R5.5): repeated scans keep working and give the same clue."""
+        game = Game()
+        play(game, ["north"])
+        results = [game.handle(SCAN) for _ in range(5)]
+        for result in results:
+            self.assertEqual(result.outcome, Outcome.SCANNED)
+            self.assertEqual(result.room.clue, results[0].room.clue)
+        self.assertEqual(game.oxygen, 11)
+
+    def test_R5_scan_at_one_oxygen_does_not_end_the_game(self):
+        """R5 (AC-R5.4): scanning on the last unit of oxygen is safe."""
+        game = Game()
+        play(game, WANDER_LOSS[:11])
+        game.handle(SCAN)
+        self.assertEqual(game.oxygen, 1)
+        self.assertEqual(game.status, Status.PLAYING)
+
+    def test_R5_scan_is_ignored_after_the_game_ends(self):
+        """R5 (AC-R5.4) and R3 (AC-R3.7): once the game is over, 'scan' does nothing."""
+        game = Game()
+        play(game, WANDER_LOSS)
+        self.assertEqual(game.handle(SCAN).outcome, Outcome.GAME_OVER)
+
+
+class Round2DoesNotChangeRound1RulesTests(unittest.TestCase):
+    def test_R4_R5_shortest_route_still_wins_with_six_oxygen_using_map_and_scan(self):
+        """R4 (AC-R4.6) and R5 (AC-R5.4): free commands at every step don't change the outcome."""
+        game = Game()
+        for direction in SHORTEST_ROUTE:
+            game.handle(MAP)
+            game.handle(SCAN)
+            game.handle(SCAN)
+            game.handle(move(direction))
+        self.assertEqual(game.status, Status.WON)
+        self.assertEqual(game.oxygen, 6)
+
+    def test_R4_R5_twelve_move_pod_arrival_is_still_a_loss_with_map_and_scan(self):
+        """R4 (AC-R4.6) and R5 (AC-R5.4), with R3 (AC-R3.6): the boundary rule is unchanged."""
+        game = Game()
+        for direction in TWELVE_MOVE_POD:
+            game.handle(SCAN)
+            game.handle(MAP)
+            game.handle(move(direction))
+        self.assertEqual(game.status, Status.LOST)
 
 
 if __name__ == "__main__":
