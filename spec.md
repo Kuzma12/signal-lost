@@ -1,6 +1,6 @@
-# Signal Lost: Specification (Rounds 1-2)
+# Signal Lost: Specification (Rounds 1-3)
 
-This spec covers Rounds 1 and 2 of *Signal Lost*.
+This spec covers Rounds 1 to 3 of *Signal Lost*.
 
 - **Round 1** defines how requirements **R1 (Room Navigation)**, **R2 (Room
   Information)**, and **R3 (Oxygen and Escaping)** from `problem.md` are
@@ -8,6 +8,11 @@ This spec covers Rounds 1 and 2 of *Signal Lost*.
 - **Round 2** adds **R4 (Ship Map)** and **R5 (Room Scanner)**. Their
   design is in Sections 3.7 and 3.8, and their acceptance criteria are in
   Section 6. Round 2 changes nothing about how Round 1 features behave.
+- **Round 3** adds **R6 (Collecting Items)** and **R7 (Inventory System)**.
+  Their design is in Section 3.9, and their acceptance criteria are in
+  Section 6. Round 3 changes nothing about how Round 1-2 features behave,
+  except that the room display gains an `Items here:` line in rooms that
+  hold items.
 
 Features planned for later rounds (inventory, hazards, puzzles, save/load)
 are **out of scope**. Section 9 only describes where they will fit.
@@ -73,9 +78,9 @@ signal-lost/
 
 | Module | Responsibility | Must NOT |
 |--------|----------------|----------|
-| `world.py` | Defines the `Room` type (id, name, description, exits, and from Round 2 a scanner `clue`) and `build_ship()`, which returns the full map. Also defines the `START_ROOM` and `ESCAPE_ROOM` ids and (Round 2) `MAP_GRID`, each room's row/column on the ship grid. | Know about oxygen, input, or output. |
-| `parser.py` | `parse(text) -> Command`. Normalizes case and whitespace, expands aliases (`n` → `north`, `go north` → `north`), and labels input as move / help / look / quit / map / scan / empty / unknown. | Change game state. |
-| `game.py` | `Game` class holding the current room, oxygen, status (`PLAYING`, `WON`, `LOST`, `QUIT`), and (Round 2) the set of visited room ids. `Game.handle(command) -> TurnResult` applies the rules and returns a structured result. | Call `print()` or `input()`. |
+| `world.py` | Defines the `Room` type (id, name, description, exits, and from Round 2 a scanner `clue`) and `build_ship()`, which returns the full map. Also defines the `START_ROOM` and `ESCAPE_ROOM` ids and (Round 2) `MAP_GRID`, each room's row/column on the ship grid. (Round 3) Each `Room` also lists the items it holds at the start of a game. | Know about oxygen, input, or output. |
+| `parser.py` | `parse(text) -> Command`. Normalizes case and whitespace, expands aliases (`n` → `north`, `go north` → `north`), and labels input as move / help / look / quit / map / scan / empty / unknown, and (Round 3) take / drop / inventory. | Change game state. |
+| `game.py` | `Game` class holding the current room, oxygen, status (`PLAYING`, `WON`, `LOST`, `QUIT`), and (Round 2) the set of visited room ids. (Round 3) It also holds the items currently in each room and the player's inventory. `Game.handle(command) -> TurnResult` applies the rules and returns a structured result. | Call `print()` or `input()`. |
 | `cli.py` | `run(input_fn=input, output_fn=print)`. Reads input, calls the parser and `Game.handle`, and renders results to text. | Contain game rules. |
 | `main.py` | Calls `signal_lost.cli.run()` inside `if __name__ == "__main__":`. Nothing else. | Contain logic. |
 
@@ -87,16 +92,25 @@ lets later rounds add features without rewriting the loop.
 
 - **`Room`** (frozen dataclass): `id: str`, `name: str`,
   `description: str`, `exits: dict[str, str]` (direction → destination room id),
-  and from Round 2 `clue: str` (the scanner text, Section 3.8).
+  and from Round 2 `clue: str` (the scanner text, Section 3.8). From Round 3,
+  `items: tuple[str, ...]` (the item names in this room when a game starts,
+  Section 3.9). `Room` stays frozen; items that move during play are tracked
+  by `Game`, not by `Room`.
 - **`Command`** (frozen dataclass): `kind: str` (`"move"`, `"help"`,
   `"look"`, `"quit"`, `"map"`, `"scan"`, `"empty"`, `"unknown"`),
   `arg: str | None` (the direction for moves, the original text for unknown
-  input).
+  input). From Round 3, `kind` can also be `"take"`, `"drop"`, or
+  `"inventory"`, and `arg` is the item name for `take` / `drop` (lower-case,
+  single-spaced, or `None` if no name was typed).
 - **`TurnResult`** (dataclass): `outcome` (an enum such as `MOVED`,
   `BLOCKED`, `INVALID`, `LOOKED`, `HELP`, `MAPPED`, `SCANNED`, `WON`, `LOST`,
   `QUIT`), `room: Room`, `oxygen: int`, `oxygen_used: int` (0 or 1), and from
   Round 2 `visited: frozenset[str]` (ids of every room entered so far,
-  including the start room).
+  including the start room). From Round 3 it also has `items: tuple[str, ...]`
+  (items in the current room now), `inventory: tuple[str, ...]` (items the
+  player carries, in pickup order), and `item: str | None` (the item named by
+  a `take` / `drop`). New outcomes: `TAKEN`, `NOT_HERE`, `DROPPED`,
+  `NOT_CARRIED`, `INVENTORY`.
 - **Constants** in `game.py`: `STARTING_OXYGEN = 12`, `OXYGEN_PER_MOVE = 1`.
 
 ---
@@ -194,6 +208,9 @@ These commands **never** use oxygen:
 | `look` / `l` | Shows the current room's information again (Section 3.6) |
 | `map` / `m` | (Round 2, R4) Shows the map of visited rooms (Section 3.7) |
 | `scan` / `sc` | (Round 2, R5) Shows the current room's scanner clue (Section 3.8) |
+| `take <item>` / `get <item>` | (Round 3, R6) Picks up an item in this room (Section 3.9) |
+| `drop <item>` | (Round 3, R7) Leaves a carried item in this room (Section 3.9) |
+| `inventory` / `inv` / `i` | (Round 3, R7) Lists the items being carried (Section 3.9) |
 | `help` / `h` / `?` | Lists the available commands |
 | `quit` / `q` / `exit` | Ends the game with a goodbye message. This counts as neither a win nor a loss. |
 
@@ -297,6 +314,70 @@ Typing `scan` (or `sc`) shows the current room's clue:
   is a free way to plan with limited oxygen. The Escape Pod has a clue too,
   even though entering it ends the game, so every room meets the rule above.
 
+### 3.9 Items and Inventory (R6, R7, Round 3)
+
+**Items.** An item is identified by its name: a short, lower-case string
+that is unique on the ship. Items are only collected and carried in Round 3.
+They do not open doors, change oxygen, or affect winning or losing.
+
+Starting placement (`Room.items` in `world.py`):
+
+| Room | Item |
+|------|------|
+| Cryo Bay | `flashlight` |
+| Medical Bay | `medkit` |
+| Bridge | `keycard` |
+| Engineering | `repair kit` |
+
+Every other room, including the Escape Pod, starts empty. The flashlight sits
+in the starting room so the player meets the item system right away.
+
+**Item state.** `Game` keeps the items currently in each room (starting from
+`Room.items`) and the player's inventory. Inventory order is the order items
+were picked up. A room's items are listed in their starting order, and an
+item dropped there is added to the end. An item is always in exactly one
+place, either one room or the inventory, so items are never duplicated or
+lost. There is no carrying limit.
+
+**Name matching.** `take` and `drop` need the item's full name. Case and
+extra spaces are ignored, so `TAKE   Repair  Kit` takes the repair kit, but
+`take kit` does not match anything.
+
+**Seeing items (R6).** Whenever a room is displayed (on entering it, at game
+start, and with `look`), a line lists its current items, between the blank
+line and the `Exits:` line:
+
+```
+==================================================
+  CRYO BAY
+==================================================
+<description>
+
+Items here: flashlight
+Exits: north
+[ OXYGEN: 12/12 ]
+```
+
+The line is left out when the room holds no items, so empty rooms look
+exactly as in Section 3.6. A long list wraps to 50 columns.
+
+**Commands and messages.**
+
+| Input | Case | Output | State change |
+|-------|------|--------|--------------|
+| `take <item>` / `get <item>` | item is in this room | `You take the <item>.` | item moves from the room to the end of the inventory |
+| | item is not in this room (already carried, elsewhere, or not a real item) | `There is no '<item>' here.` | none |
+| | no name (`take`, `get`) | `Take what?` | none |
+| `drop <item>` | item is carried | `You drop the <item>.` | item moves from the inventory to the end of this room's items |
+| | item is not carried | `You are not carrying '<item>'.` | none |
+| | no name (`drop`) | `Drop what?` | none |
+| `inventory` / `inv` / `i` | carrying items | `You are carrying:` then one `  - <item>` line each, in pickup order | none |
+| | carrying nothing | `Your inventory is empty.` | none |
+
+`<item>` in the messages is the normalized (lower-case, single-spaced) name.
+None of these commands use oxygen or change the room or game status. Taking
+an item does not change the map or the visited rooms.
+
 ---
 
 ## 4. Oxygen, Winning, and Losing
@@ -306,7 +387,8 @@ Typing `scan` (or `sc`) shows the current room's clue:
 1. Oxygen starts at **12**.
 2. A **successful** move to a different room lowers oxygen by exactly **1**.
 3. Blocked moves, invalid commands, empty input, `look`, `help`, `quit`,
-   and (Round 2) `map` and `scan` use **0** oxygen.
+   (Round 2) `map` and `scan`, and (Round 3) `take`, `drop`, and
+   `inventory` use **0** oxygen.
 4. Oxygen never goes below 0.
 
 ### 4.2 Turn Resolution Order
@@ -449,6 +531,31 @@ Each criterion has an ID. Section 7 maps every ID to at least one test.
 | AC-R5.5 | The same room can be scanned more than once, and it gives the same clue each time. |
 | AC-R5.6 | Scanner output fits in 50 columns. |
 
+### R6: Collecting Items (Round 3)
+
+| ID | Criterion |
+|----|-----------|
+| AC-R6.1 | `take <item>` and `get <item>` (ignoring case and extra spaces) are recognized as the take command with the item's normalized name; `take` or `get` with no name gives `Take what?`. `help` lists `take`. |
+| AC-R6.2 | The ship starts with the flashlight in the Cryo Bay, the medkit in the Medical Bay, the keycard on the Bridge, and the repair kit in Engineering. Item names are unique, and the Escape Pod has no items. |
+| AC-R6.3 | When a room is displayed (game start, entering it, `look`), its current items are listed on an `Items here:` line; the line is left out when the room has none. |
+| AC-R6.4 | Taking an item that is in the current room removes it from the room, adds it to the inventory, and confirms with a message. |
+| AC-R6.5 | Taking an item that is not in the current room (already carried, in another room, or not a real item) says it is not here and changes nothing. |
+| AC-R6.6 | Taking an item uses no oxygen and does not change the room or status. Collecting items along the shortest route still wins with 6 oxygen. |
+| AC-R6.7 | Item names must be typed in full (case and spaces ignored); a partial name such as `kit` does not match. |
+
+### R7: Inventory System (Round 3)
+
+| ID | Criterion |
+|----|-----------|
+| AC-R7.1 | `inventory`, `inv`, and `i` (ignoring case and extra spaces) are recognized as the inventory command, and `drop <item>` as the drop command. `help` lists both. |
+| AC-R7.2 | The inventory command lists every carried item, in pickup order. |
+| AC-R7.3 | With nothing carried, the inventory command says `Your inventory is empty.` |
+| AC-R7.4 | Dropping a carried item removes it from the inventory and puts it in the current room, where it is shown and stays until taken again (it can be taken again later). |
+| AC-R7.5 | Dropping an item that is not carried says so and changes nothing; `drop` with no name gives `Drop what?`. |
+| AC-R7.6 | Checking the inventory and dropping items use no oxygen and do not change the room or status. |
+| AC-R7.7 | Items are never duplicated or lost: across all rooms and the inventory there are always exactly the four starting items. |
+| AC-R7.8 | Item and inventory output fits in 50 columns, even with all four items in one room. |
+
 ### General Quality
 
 | ID | Criterion |
@@ -519,6 +626,24 @@ Round 2 additions:
 | | Scan prints the current room's clue; repeated scans print the same text | AC-R5.3, AC-R5.5 |
 | | `help` lists `map` and `scan` | AC-R4.1, AC-R5.1 |
 
+Round 3 additions:
+
+| File | Test (summary) | Covers |
+|------|----------------|--------|
+| `test_world.py` | Starting items are in the rooms listed in 3.9; names are unique, lower-case, and non-empty; the Escape Pod is empty | AC-R6.2 |
+| `test_parser.py` | `take`/`get`/`  TAKE  Repair  Kit ` parse to take with a normalized name; bare `take`/`get` give no name | AC-R6.1, AC-R6.7 |
+| | `drop <item>` parses to drop; `inventory`/`inv`/`i` parse to inventory | AC-R7.1 |
+| `test_game.py` | New game: empty inventory, room items match `Room.items` | AC-R6.2, AC-R7.3 |
+| | Take moves an item from room to inventory (`TAKEN`); missing, carried, partial, or no-name takes change nothing | AC-R6.4, AC-R6.5, AC-R6.7 |
+| | Drop moves an item from inventory to the current room (`DROPPED`), and it can be taken again; drop of an uncarried item changes nothing | AC-R7.4, AC-R7.5 |
+| | Inventory keeps pickup order | AC-R7.2 |
+| | Take, drop, and inventory change no oxygen, room, status, or visited rooms; shortest route with items still wins with 6 | AC-R6.6, AC-R7.6 |
+| | Item total stays at four after a mix of moves, takes, and drops | AC-R7.7 |
+| `test_cli.py` | Start, entering, and `look` show `Items here:`; empty rooms have no such line | AC-R6.3 |
+| | Take, drop, and inventory print the messages in 3.9 (including empty inventory, `Take what?`, `Drop what?`) | AC-R6.4, AC-R6.5, AC-R7.2-7.5 |
+| | A dropped item appears when the player comes back to that room | AC-R7.4 |
+| | `help` lists take, drop, and inventory; item output fits 50 columns with all items in one room | AC-R6.1, AC-R7.1, AC-R7.8 |
+
 Example scripted paths:
 - **Shortest win (6):** `n, e, s, s, e, e`
 - **10-move win:** `n, s, n, s, n, e, s, s, e, e`
@@ -555,7 +680,7 @@ following will be built in Round 1.**
 
 | Future feature | Where it will plug in |
 |----------------|-----------------------|
-| **Inventory** (`take`, `drop`, `inventory`) | Add an `items` field to `Room` and an `inventory` to `Game`. Add new `Command.kind` values in `parser.py` and handlers in `Game.handle`. The CLI loop doesn't change. |
+| **Inventory** (`take`, `drop`, `inventory`) | *Built in Round 3, see Section 3.9.* Add an `items` field to `Room` and an `inventory` to `Game`. Add new `Command.kind` values in `parser.py` and handlers in `Game.handle`. The CLI loop doesn't change. |
 | **Hazards** (e.g. a reactor leak that costs extra oxygen) | Add a hook in `Game` after "enter room" (step 3 in 4.2) that can change oxygen or status. Rooms get an optional hazard attribute. |
 | **Puzzles / locked doors** | Exits can later point to a small `Exit` object (destination + optional lock condition). Movement already goes through a single method, `Game._move()`, so lock checks go in one place. |
 | **Save / load** | All game state lives in plain data on `Game` (room id, oxygen, status). Later rounds add `to_dict()` / `from_dict()` and JSON storage. The map is rebuilt from `build_ship()`, so only player state needs saving. |
@@ -577,3 +702,11 @@ color output, sound, difficulty levels, and score tracking.
 Round 2 adds only the map (R4) and the scanner (R5). Everything listed
 above is still out of scope. Scanning does not reveal unvisited rooms on
 the map, and the map does not hint at unexplored exits.
+
+### Round 3
+
+Round 3 adds only collecting items (R6) and the inventory (R7). Items have
+no effect on movement, oxygen, or winning; locked doors, puzzles, item
+descriptions (`examine`), using items, carrying limits, `take all` /
+`drop all`, and partial item names are out of scope. Hazards, save/load,
+and the rest of the list above are still out of scope.
