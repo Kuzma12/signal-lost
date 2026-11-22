@@ -1,6 +1,6 @@
-# Signal Lost: Specification (Rounds 1-5)
+# Signal Lost: Specification (Rounds 1-6)
 
-This spec covers Rounds 1 to 5 of *Signal Lost*.
+This spec covers Rounds 1 to 6 of *Signal Lost*.
 
 - **Round 1** defines how requirements **R1 (Room Navigation)**, **R2 (Room
   Information)**, and **R3 (Oxygen and Escaping)** from `problem.md` are
@@ -26,6 +26,12 @@ This spec covers Rounds 1 to 5 of *Signal Lost*.
   for history) is in Section 4.6, and the acceptance criteria are in
   Section 6. Earlier sections are not rewritten; where Round 5 changes
   something they say, a "(Round 5)" note points to the new text.
+- **Round 6** adds **R11 (Saving the Game)** and **R12 (Loading the
+  Game)**: `save` writes the whole game state to a JSON file and `load`
+  restores it. The design is in Section 3.12 and the acceptance criteria
+  are in Section 6. Round 6 changes no rule from Rounds 1-5; where it adds
+  to something an earlier section says, a "(Round 6)" note points to the
+  new text.
 
 Inventory (Round 3) and hazards (Round 4) are now built. Features still
 planned for later rounds (puzzles / locked doors and save/load) are **out
@@ -33,6 +39,9 @@ of scope**. Section 9 only describes where they will fit.
 
 (Round 5) The locked Escape Pod door is now built (Section 3.11). Other
 puzzles and locked doors, and save/load, are still out of scope.
+
+(Round 6) Save/load is now built (Section 3.12). Other puzzles and locked
+doors are still out of scope.
 
 ---
 
@@ -101,6 +110,16 @@ signal-lost/
 | `cli.py` | `run(input_fn=input, output_fn=print)`. Reads input, calls the parser and `Game.handle`, and renders results to text. | Contain game rules. |
 | `main.py` | Calls `signal_lost.cli.run()` inside `if __name__ == "__main__":`. Nothing else. | Contain logic. |
 
+(Round 6) A fifth package module, `signal_lost/savefile.py`, reads and
+writes the save file (Section 3.12). It knows JSON and files but nothing
+about rooms, oxygen, or rules: `write(path, data)` and `read(path)`, plus
+the `SAVE_FILE` name and the `NoSaveFile` and `DamagedSave` errors.
+`game.py` turns its state into plain data, checks loaded data against the
+rules, and calls `savefile` from its `save` and `load` handlers; it still
+never calls `print()` or `input()`. `parser.py` gains the `save` and
+`load` kinds, and `cli.py` renders the new outcomes. A new test file,
+`tests/test_savefile.py`, covers the file layer.
+
 **Key principle:** game logic (`game.py`) stays separate from I/O (`cli.py`).
 This keeps the rules easy to unit-test without faking a terminal. It also
 lets later rounds add features without rewriting the loop.
@@ -142,6 +161,13 @@ lets later rounds add features without rewriting the loop.
   outcomes `LOCKED` (tried to enter the locked pod), `UNLOCKED`,
   `ALREADY_UNLOCKED`, and `WRONG_PLACE` (keycard used away from the
   reader). `TurnResult` gains no new fields.
+- (Round 6) `Command.kind` can also be `"save"` or `"load"` (no `arg`).
+  `Game(rooms=None, save_path=SAVE_FILE)` takes the save file's path, and
+  `cli.run(input_fn, output_fn, save_path=SAVE_FILE)` passes it through,
+  so tests can use a temporary folder. `game.py` adds `SAVE_VERSION = 1`
+  and the outcomes `SAVED`, `SAVE_FAILED`, `LOADED`, `NO_SAVE`, and
+  `DAMAGED_SAVE`. `TurnResult` gains no new fields: a `LOADED` result
+  already carries the restored room, oxygen, health, and items.
 
 ---
 
@@ -587,6 +613,125 @@ Every winning route has 8 or 10 moves (by exhaustive search; 12 is a loss
 by Section 4.3). The lock only refuses moves, so the Round 4 health
 analysis in Section 3.10 is unchanged.
 
+### 3.12 Saving and Loading (R11, R12, Round 6)
+
+**Commands.** `save` and `load` are single words; case and extra spaces
+are ignored (`  SAVE ` works). They have no one-letter aliases, because
+`s` is south and `l` is look. Anything after the word (`save game`,
+`load 2`) is an unknown command. `help` lists both. Like every other
+command, they are ignored once the game has ended (Section 4.4); during
+play the game loop never reaches that point, since it stops reading input.
+
+**One save slot.** The save file is `signal_lost_save.json`
+(`savefile.SAVE_FILE`) in the folder the game is started from (the
+current working directory). There is one slot: every `save` replaces the
+previous save without asking. The file is ignored by Git (`.gitignore`).
+
+**What is saved.** Every piece of live game state on `Game` (Sections
+3.7, 3.9-3.11), and nothing that comes from `build_ship()`:
+
+```json
+{
+  "version": 1,
+  "room": "central_corridor",
+  "oxygen": 10,
+  "health": 10,
+  "status": "playing",
+  "visited": ["central_corridor", "cryo_bay", "medical_bay"],
+  "room_items": {
+    "airlock_junction": [],
+    "bridge": ["keycard"],
+    "cargo_hold": [],
+    "central_corridor": [],
+    "comms_array": [],
+    "cryo_bay": [],
+    "engineering": ["repair kit"],
+    "escape_pod": [],
+    "medical_bay": [],
+    "mess_hall": [],
+    "reactor_core": []
+  },
+  "inventory": ["flashlight", "medkit"],
+  "pod_locked": true
+}
+```
+
+- `version` is the save format number, `SAVE_VERSION = 1`.
+- `room`, `oxygen`, `health`, and `status` are the player's current
+  values. `status` is always `"playing"`, because saving after the game
+  ends is impossible.
+- `visited` is the set of visited room ids, written in sorted order so the
+  file is the same for the same state.
+- `room_items` lists every room id, each with its items in display order
+  (Section 3.9). `inventory` is in pickup order.
+- `pod_locked` is the Escape Pod door (Section 3.11).
+- A used medkit is simply missing from both `room_items` and `inventory`
+  (Section 3.10), so no extra field is needed.
+
+The file is written with the standard-library `json` module (2-space
+indent, UTF-8, ending in a newline). It is written to a temporary file
+next to it (`signal_lost_save.json.tmp`) and then moved into place, so a
+save that fails halfway never damages the previous save.
+
+**Saving.**
+
+| Case | Output | State change |
+|------|--------|--------------|
+| The file is written | `Game saved.` (outcome `SAVED`) | none (the file on disk is replaced) |
+| The file can't be written (e.g. the folder is read-only, or the path is a folder) | `Save failed: the file could not be written.` (outcome `SAVE_FAILED`) | none; an earlier save file is left as it was |
+
+Saving costs no oxygen or health and never changes the room, status,
+visited rooms, items, inventory, or lock.
+
+**Loading.**
+
+| Case | Output | State change |
+|------|--------|--------------|
+| The file exists and passes every check below | `Game loaded.`, a blank line, then the restored room display (Section 3.6: name, description, `Items here:`, exits, oxygen and health gauges, as for `look`) (outcome `LOADED`) | the whole game state is replaced by the saved state |
+| There is no save file | `There is no saved game to load.` (outcome `NO_SAVE`) | none |
+| The file is damaged (any check below fails) | `The save file is damaged and can't be loaded.` then `Your current game is unchanged.` (outcome `DAMAGED_SAVE`) | none |
+
+Loading never deletes, changes, or rewrites the save file. The `load`
+command itself costs nothing: oxygen and health become exactly the saved
+values. Loading is all-or-nothing: every check runs **before** any state
+changes, so a damaged file can never leave a half-loaded game. The
+restored game is a fresh copy, so playing on after `load` never changes
+the file until the next `save`, and `load` can be used again to go back.
+
+**Checks on a save file.** The file is damaged unless **all** of these
+hold:
+
+1. It can be read, is valid UTF-8, and is valid JSON whose top level is an
+   object. (A file that exists but can't be read, such as a folder with
+   that name, counts as damaged.)
+2. It has exactly the keys `version`, `room`, `oxygen`, `health`,
+   `status`, `visited`, `room_items`, `inventory`, and `pod_locked`.
+3. `version` is the integer 1, and `status` is `"playing"`.
+4. `oxygen` is an integer from 1 to 12, and `health` is an integer from 1
+   to 10. (`true`/`false` and decimals such as `5.0` are not integers.)
+   Neither can be 0 during play, because that ends the game.
+5. `room` is a ship room id other than `escape_pod` (entering the pod
+   always ends the game).
+6. `visited` is a list of room ids with no repeats that includes
+   `cryo_bay` and `room` and does not include `escape_pod`.
+7. `room_items` is an object whose keys are exactly the 11 room ids, and
+   each value is a list of strings; the `escape_pod` list is empty.
+8. `inventory` is a list of strings.
+9. Across `room_items` and `inventory`, every item is one of the four
+   starting items, none appears twice, and either all four are there, or
+   all except the medkit (it was used).
+10. `pod_locked` is `true` or `false`.
+
+These match the rules from earlier rounds: any state the game can reach
+during play passes, and a hand-edited file that gives extra oxygen, a
+second keycard, or a position inside the pod does not.
+
+**Balance.** Saving and loading do not change any route or number in
+Sections 3.3, 3.10, or 3.11. Loading can return the player to a state
+with more oxygen than they have now; that is the purpose of R12.
+
+**Output width.** Every new message fits in 50 columns.
+
 ---
 
 ## 4. Oxygen, Winning, and Losing
@@ -599,6 +744,9 @@ analysis in Section 3.10 is unchanged.
    (Round 2) `map` and `scan`, and (Round 3) `take`, `drop`, and
    `inventory`, and (Round 4) `use` use **0** oxygen.
 4. Oxygen never goes below 0.
+
+(Round 6) `save` and `load` also use **0** oxygen. A successful `load`
+sets oxygen to the saved value (Section 3.12).
 
 ### 4.2 Turn Resolution Order
 
@@ -715,6 +863,11 @@ Input is trimmed and lower-cased before parsing, so `  NoRtH  ` means
 (Round 5) Trying to enter the locked Escape Pod is answered like a blocked
 move, with the lock message from Section 3.11 and the room's exits. The
 room, oxygen, and health do not change.
+
+(Round 6) `save` or `load` followed by more words (`save game`) is an
+unknown command. A missing or damaged save file and a save that can't be
+written are answered with the messages in Section 3.12; none of them
+changes the game or crashes it.
 
 ---
 
@@ -884,6 +1037,32 @@ be used. The keycard is never used up, so the item count rule is unchanged.
 | AC-R10.8 | The game is still winnable from 12 oxygen and 10 health without healing, using the keycard (8-move routes, 4 oxygen and 8 health left). |
 | AC-R10.9 | The Airlock Junction's `Exits:` line is unchanged by the lock, `help` still lists `use`, and all new output fits in 50 columns. |
 
+### R11: Saving the Game (Round 6)
+
+| ID | Criterion |
+|----|-----------|
+| AC-R11.1 | `save` (ignoring case and extra spaces) is recognized as the save command; `save` followed by other words is an unknown command. `help` lists `save`. |
+| AC-R11.2 | `save` writes `signal_lost_save.json` in the current folder as a JSON object with `version` 1 and the current `room`, `oxygen`, `health`, `status`, `visited` (sorted), `room_items` (every room), `inventory` (pickup order), and `pod_locked`. |
+| AC-R11.3 | Saving uses no oxygen or health and does not change the room, status, visited rooms, items, inventory, or lock. |
+| AC-R11.4 | A successful save prints `Game saved.` |
+| AC-R11.5 | There is one save slot: saving again replaces the previous save with the current state. |
+| AC-R11.6 | If the file can't be written, `Save failed: the file could not be written.` is shown, the game goes on unchanged, and an earlier save file is not changed. |
+| AC-R11.7 | The save file (and its temporary file) is ignored by Git, and saving uses only the standard library. |
+
+### R12: Loading the Game (Round 6)
+
+| ID | Criterion |
+|----|-----------|
+| AC-R12.1 | `load` (ignoring case and extra spaces) is recognized as the load command; `load` followed by other words is an unknown command. `help` lists `load`. |
+| AC-R12.2 | Loading a save restores the room, oxygen, health, inventory (in order), the items in every room, the visited rooms (the map), and the pod lock, with status `PLAYING`. |
+| AC-R12.3 | After loading, the game behaves exactly as if the saved game had gone on: the same commands give the same results, including unlocking the pod and winning. This works from a new game and from a new run of `python3 main.py`. |
+| AC-R12.4 | A successful load prints `Game loaded.` and then the restored room display, with its items, exits, and the oxygen and health gauges. |
+| AC-R12.5 | The `load` command itself uses no oxygen or health: afterwards both equal the saved values exactly. Loading does not change or delete the save file, and the same save can be loaded more than once. |
+| AC-R12.6 | With no save file, `load` prints `There is no saved game to load.`, changes nothing, and does not crash. |
+| AC-R12.7 | A damaged save file (unreadable, not UTF-8, not JSON, or failing any check in Section 3.12) makes `load` print the damaged-file message and change nothing, without crashing. |
+| AC-R12.8 | Loading is all-or-nothing: a file that fails a check after other fields looked valid still leaves every part of the current game unchanged. |
+| AC-R12.9 | All save and load output fits in 50 columns. |
+
 ### General Quality
 
 | ID | Criterion |
@@ -1004,6 +1183,26 @@ Round 5 additions:
 | `test_world.py` | (Round 5 clarification) Corridor clue names the keycard, the Bridge, and north, and still points south; Bridge clue says the pod needs a keycard; the old "cold and still" / "Nothing forward" wording is gone; neither clue mentions the airlock, the reader, or `use keycard` | AC-R5.7 |
 | `test_cli.py` | (Round 5 clarification) Scanning the Corridor and the Bridge shows the keycard hint within 50 columns | AC-R5.7, AC-R5.6 |
 
+Round 6 additions (every test uses a temporary folder, so no test writes a
+save file into the project):
+
+| File | Test (summary) | Covers |
+|------|----------------|--------|
+| `test_parser.py` | `save`/`  SAVE ` and `load`/`Load` parse to save and load; `save game` and `load 2` are unknown | AC-R11.1, AC-R12.1 |
+| `test_savefile.py` | `write` then `read` returns the same data; the file is UTF-8 JSON with a trailing newline; the default name is `signal_lost_save.json` | AC-R11.2 |
+| | Writing replaces an earlier file; a failed write leaves the earlier file unchanged and raises `OSError` | AC-R11.5, AC-R11.6 |
+| | Reading a missing file raises `NoSaveFile`; unreadable, non-UTF-8, and non-JSON files raise `DamagedSave` | AC-R12.6, AC-R12.7 |
+| | `.gitignore` ignores the save file and its temporary file; the module imports only the standard library | AC-R11.7 |
+| `test_game.py` | `save` writes every field listed in 3.12 with the current values, and changes no state or oxygen/health | AC-R11.2-11.4 |
+| | Saving twice keeps only the second state; an unwritable path gives `SAVE_FAILED` and changes nothing | AC-R11.5, AC-R11.6 |
+| | `load` in a new game restores every field (including an unlocked pod, a used medkit, and dropped items) | AC-R12.2, AC-R12.5 |
+| | A loaded game and an uninterrupted game give the same results for the rest of a winning script | AC-R12.3 |
+| | No file gives `NO_SAVE`; each kind of damaged file gives `DAMAGED_SAVE`; neither changes any state | AC-R12.6-12.8 |
+| | Save and load after the game has ended give `GAME_OVER` and write nothing | 3.12 |
+| `test_cli.py` | `save` prints `Game saved.`; `load` prints `Game loaded.` and the room display with gauges; missing, damaged, and unwritable files print their messages; `help` lists both; output fits 50 columns | AC-R11.1, AC-R11.4, AC-R11.6, AC-R12.1, AC-R12.4, AC-R12.6, AC-R12.7, AC-R12.9 |
+| | Save, wander, load, and finish the keycard route: wins with 4 oxygen | AC-R12.3 |
+| | `python3 main.py` saves in one run and loads and wins in a second run (in a temporary folder) | AC-R12.3 |
+
 (Round 5) Existing Round 1-4 tests whose scripted routes walked straight
 into the pod are given the keycard detour, because the revised R3 makes
 those routes stop at the locked door instead of winning. The paths below
@@ -1025,6 +1224,9 @@ Example scripted paths:
   take keycard, s, s, s, e, use keycard, e`
 - **(Round 5) Locked door:** `n, e, s, s, e, e` now stops at the Airlock
   Junction with the lock message, with 7 oxygen and 8 health.
+- **(Round 6) Save and come back:** `n, e, n, take keycard, s, save, s, s,
+  load, s, s, e, use keycard, e` wins with 4 oxygen and 8 health: the
+  `load` puts the player back in the Central Corridor with 9 oxygen.
 
 ### 7.3 Running Tests
 
@@ -1063,13 +1265,17 @@ following will be built in Round 1.**
 > `pod_locked` flag on `Game`, checked in `Game._move()` before the room
 > changes (Section 3.11). A general `Exit` object was not needed for one
 > door. Save/load also needs `pod_locked`.
+>
+> **Status after Round 6:** Save/load is built (Section 3.12). As planned
+> above, only player state is saved and the map comes from `build_ship()`.
+> The row below says what changed from the plan.
 
 | Future feature | Where it will plug in |
 |----------------|-----------------------|
 | **Inventory** (`take`, `drop`, `inventory`) | *Built in Round 3, see Section 3.9.* Add an `items` field to `Room` and an `inventory` to `Game`. Add new `Command.kind` values in `parser.py` and handlers in `Game.handle`. The CLI loop doesn't change. |
 | **Hazards** (e.g. a reactor leak that costs extra oxygen) | *Built in Round 4 as health damage, see Section 3.10.* Add a hook in `Game` after "enter room" (step 3 in 4.2) that can change oxygen or status. Rooms get an optional hazard attribute. |
 | **Puzzles / locked doors** | Exits can later point to a small `Exit` object (destination + optional lock condition). Movement already goes through a single method, `Game._move()`, so lock checks go in one place. |
-| **Save / load** | All game state lives in plain data on `Game` (room id, oxygen, status). Later rounds add `to_dict()` / `from_dict()` and JSON storage. The map is rebuilt from `build_ship()`, so only player state needs saving. |
+| **Save / load** | All game state lives in plain data on `Game` (room id, oxygen, status). Later rounds add `to_dict()` / `from_dict()` and JSON storage. The map is rebuilt from `build_ship()`, so only player state needs saving. *(Round 6) Built in Section 3.12 as `Game.save_data()` and a checked restore in `game.py`, with JSON file reading and writing in `savefile.py`. It saves room id, oxygen, health, status, visited, room items, inventory, and the pod lock.* |
 | **New commands in general** | `Game.handle` sends each command to a handler using a dict of `kind → method`, so adding a command means adding one parser rule and one handler. |
 
 Round 1 code must **not** include stub fields, placeholder commands, or unused
@@ -1117,3 +1323,13 @@ for the flashlight or repair kit, and save/load are out of scope.
 Corridor and Bridge scan clues were corrected, because they told the
 player to avoid the Bridge, which R10 makes required (Section 3.8, AC-R5.7).
 Room descriptions and every other clue are unchanged.
+
+### Round 6
+
+Round 6 adds only saving (R11) and loading (R12). Several save slots or
+named saves, choosing the save file's location in the game, asking before
+overwriting, auto-saving, loading automatically at start-up, deleting a
+save from the game, saving after the game ends, save files from other
+versions of the game, encryption or checksums, and showing the inventory
+or the lock on `load` are out of scope. Other puzzles and locked doors are
+still out of scope.
