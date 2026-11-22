@@ -1,6 +1,6 @@
 """Command parsing tests for signal_lost.parser.
 
-Every test name starts with the requirement it checks (R1-R7), and
+Every test name starts with the requirement it checks (R1-R9), and
 its docstring names the acceptance criterion from spec.md Section 6.
 """
 
@@ -186,6 +186,27 @@ class ItemParsingTests(unittest.TestCase):
         self.assertEqual(parse("e"), Command("move", "east"))
         self.assertEqual(parse("go east"), Command("move", "east"))
         self.assertFalse(is_go_attempt(parse("take keycard")))
+
+    def test_R9_use_parses_to_use_with_the_item_name(self):
+        """R9 (AC-R9.1): 'use <item>' is the use command with a normalized name."""
+        for text, name in (("use medkit", "medkit"), ("  USE   MedKit ", "medkit"),
+                           ("use Repair  Kit", "repair kit")):
+            with self.subTest(text=text):
+                self.assertEqual(parse(text), Command("use", name))
+
+    def test_R9_use_with_no_item_name_has_no_arg(self):
+        """R9 (AC-R9.1): bare 'use' is a use command with no name."""
+        for text in ("use", "  USE "):
+            with self.subTest(text=text):
+                self.assertEqual(parse(text), Command("use"))
+
+    def test_R9_use_does_not_change_other_commands(self):
+        """R9 (AC-R9.7): take, drop, inventory, and moves parse as before."""
+        self.assertEqual(parse("take medkit"), Command("take", "medkit"))
+        self.assertEqual(parse("drop medkit"), Command("drop", "medkit"))
+        self.assertEqual(parse("i"), Command("inventory"))
+        self.assertEqual(parse("go east"), Command("move", "east"))
+        self.assertFalse(is_go_attempt(parse("use medkit")))
 
 
 if __name__ == "__main__":

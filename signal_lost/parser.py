@@ -22,8 +22,8 @@ _COMMAND_ALIASES = {
     "inventory": "inventory", "inv": "inventory", "i": "inventory",
 }
 
-# Verbs followed by an item name (spec.md Section 3.9).
-_ITEM_VERBS = {"take": "take", "get": "take", "drop": "drop"}
+# Verbs followed by an item name (spec.md Sections 3.9 and 3.10).
+_ITEM_VERBS = {"take": "take", "get": "take", "drop": "drop", "use": "use"}
 
 _GO = "go"
 
@@ -34,10 +34,10 @@ class Command:
 
     ``kind`` is one of ``"move"``, ``"help"``, ``"look"``, ``"quit"``,
     ``"map"``, ``"scan"``, ``"take"``, ``"drop"``, ``"inventory"``,
-    ``"empty"``, or ``"unknown"``. ``arg`` is the direction for a move, the
-    item name (lower-case, single-spaced) for take/drop, the text the
-    player typed (trimmed) for unknown input, and ``None`` otherwise
-    (including take/drop with no item name).
+    ``"use"``, ``"empty"``, or ``"unknown"``. ``arg`` is the direction for a
+    move, the item name (lower-case, single-spaced) for take/drop/use, the
+    text the player typed (trimmed) for unknown input, and ``None``
+    otherwise (including take/drop/use with no item name).
     """
 
     kind: str
