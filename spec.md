@@ -1,0 +1,443 @@
+# Signal Lost: Specification (Round 1)
+
+This spec covers Round 1 of *Signal Lost*. It defines how requirements
+**R1 (Room Navigation)**, **R2 (Room Information)**, and **R3 (Oxygen and
+Escaping)** from `problem.md` will be built and tested. Features planned for
+later rounds (inventory, hazards, puzzles, save/load) are **out of scope**.
+Section 9 only describes where they will fit.
+
+---
+
+## 1. Game Overview and Purpose
+
+### 1.1 Premise
+
+> *You wake up in a cryo pod. Warning lights flash red. The ship's AI is
+> silent and the hull is breached. Your suit has twelve units of oxygen left.
+> Somewhere aboard is an escape pod. Find it before you run out of air.*
+
+*Signal Lost* is a single-player text adventure in the terminal. The player
+moves through a damaged spaceship by typing compass directions. Each move to
+another room uses one unit of oxygen. The player wins by reaching the Escape
+Pod before their oxygen runs out.
+
+### 1.2 Design Goals
+
+| Goal | How Round 1 meets it |
+|------|----------------------|
+| Easy to understand | Only four movement directions plus `help`, `look`, and `quit`. Every room lists its exits. |
+| Some challenge | The shortest route takes 6 moves out of 12. Dead ends and a loop of rooms that leads nowhere punish careless exploring. |
+| Sci-fi atmosphere | Short, evocative room descriptions, ship-alert style messages, and an oxygen gauge shown after every move. |
+| Polished | Clean formatting, input that ignores case and extra spaces, no crashes or tracebacks (including on Ctrl-C and Ctrl-D). |
+
+### 1.3 Technical Constraints
+
+- Python 3.10 or newer.
+- **Standard library only.** No third-party packages and no `requirements.txt`.
+- No randomness in Round 1. The same inputs always produce the same output,
+  so the game can be tested reliably.
+- Plain text output only. No ANSI colors or curses in Round 1, because
+  terminal support varies. Atmosphere comes from the writing and from ASCII
+  framing such as `====` rules and `[ OXYGEN ]` gauges.
+
+---
+
+## 2. Project Structure
+
+```
+signal-lost/
+├── problem.md            # Problem statement (read-only)
+├── spec.md               # This document
+├── main.py               # Entry point: `python3 main.py`
+├── signal_lost/          # Game package
+│   ├── __init__.py
+│   ├── world.py          # Room data model and the ship map
+│   ├── parser.py         # Turns raw input text into a Command
+│   ├── game.py           # Game state and rules (no printing, no input)
+│   └── cli.py            # Terminal I/O loop and text rendering
+└── tests/
+    ├── __init__.py
+    ├── test_world.py     # Map integrity
+    ├── test_parser.py    # Command parsing
+    ├── test_game.py      # Rules: movement, oxygen, win/loss
+    └── test_cli.py       # Output formatting and full playthroughs
+```
+
+### 2.1 Module Responsibilities
+
+| Module | Responsibility | Must NOT |
+|--------|----------------|----------|
+| `world.py` | Defines the `Room` type (id, name, description, exits) and `build_ship()`, which returns the full map. Also defines the `START_ROOM` and `ESCAPE_ROOM` ids. | Know about oxygen, input, or output. |
+| `parser.py` | `parse(text) -> Command`. Normalizes case and whitespace, expands aliases (`n` → `north`, `go north` → `north`), and labels input as move / help / look / quit / empty / unknown. | Change game state. |
+| `game.py` | `Game` class holding the current room, oxygen, and status (`PLAYING`, `WON`, `LOST`, `QUIT`). `Game.handle(command) -> TurnResult` applies the rules and returns a structured result. | Call `print()` or `input()`. |
+| `cli.py` | `run(input_fn=input, output_fn=print)`. Reads input, calls the parser and `Game.handle`, and renders results to text. | Contain game rules. |
+| `main.py` | Calls `signal_lost.cli.run()` inside `if __name__ == "__main__":`. Nothing else. | Contain logic. |
+
+**Key principle:** game logic (`game.py`) stays separate from I/O (`cli.py`).
+This keeps the rules easy to unit-test without faking a terminal. It also
+lets later rounds add features without rewriting the loop.
+
+### 2.2 Core Data Types
+
+- **`Room`** (frozen dataclass): `id: str`, `name: str`,
+  `description: str`, `exits: dict[str, str]` (direction → destination room id).
+- **`Command`** (frozen dataclass): `kind: str` (`"move"`, `"help"`,
+  `"look"`, `"quit"`, `"empty"`, `"unknown"`), `arg: str | None` (the
+  direction for moves, the original text for unknown input).
+- **`TurnResult`** (dataclass): `outcome` (an enum such as `MOVED`,
+  `BLOCKED`, `INVALID`, `LOOKED`, `HELP`, `WON`, `LOST`, `QUIT`),
+  `room: Room`, `oxygen: int`, `oxygen_used: int` (0 or 1).
+- **Constants** in `game.py`: `STARTING_OXYGEN = 12`, `OXYGEN_PER_MOVE = 1`.
+
+---
+
+## 3. Spaceship Rooms and Navigation
+
+### 3.1 Map
+
+The ship has **11 rooms** on a grid. Every exit works in both directions: if
+room A's `east` leads to B, then B's `west` leads back to A. Some rooms that
+sit next to each other on the grid are **not** connected (sealed bulkheads).
+
+```
+                 [Bridge] ─────────── [Comms Array]
+                     │                     │
+ [Medical Bay] ── [Central Corridor] ── [Mess Hall]
+     │                 │
+ [Cryo Bay]       [Engineering] ───── [Reactor Core]
+  (START)              │                   │
+                  [Cargo Hold] ────── [Airlock Junction] ── [Escape Pod]
+                                                              (GOAL)
+```
+
+### 3.2 Room Table
+
+| Id | Name | Exits |
+|----|------|-------|
+| `cryo_bay` | Cryo Bay | north → `medical_bay` |
+| `medical_bay` | Medical Bay | south → `cryo_bay`, east → `central_corridor` |
+| `central_corridor` | Central Corridor | west → `medical_bay`, north → `bridge`, east → `mess_hall`, south → `engineering` |
+| `bridge` | Bridge | south → `central_corridor`, east → `comms_array` |
+| `comms_array` | Comms Array | west → `bridge`, south → `mess_hall` |
+| `mess_hall` | Mess Hall | west → `central_corridor`, north → `comms_array` |
+| `engineering` | Engineering | north → `central_corridor`, east → `reactor_core`, south → `cargo_hold` |
+| `reactor_core` | Reactor Core | west → `engineering`, south → `airlock_junction` |
+| `cargo_hold` | Cargo Hold | north → `engineering`, east → `airlock_junction` |
+| `airlock_junction` | Airlock Junction | west → `cargo_hold`, north → `reactor_core`, east → `escape_pod` |
+| `escape_pod` | Escape Pod | west → `airlock_junction` |
+
+Short descriptions (final wording may be polished during implementation, but
+each stays 1–3 sentences):
+
+- **Cryo Bay:** Rows of shattered cryo pods line the walls. Frost creeps
+  across the floor, and the bulkhead to the east is welded shut.
+- **Medical Bay:** Overturned gurneys and scattered med-kits. A cracked
+  monitor still traces a flat green line.
+- **Central Corridor:** The ship's main artery. Emergency strip-lights pulse
+  red along a passage that branches in every direction.
+- **Bridge:** The captain's chair faces a viewport webbed with cracks. Stars
+  wheel slowly past. The ship is tumbling.
+- **Comms Array:** Banks of dead transmitters. A single screen blinks:
+  `SIGNAL LOST`.
+- **Mess Hall:** Trays float in the low gravity. Someone's coffee has frozen
+  mid-spill.
+- **Engineering:** Conduits spark overhead. A schematic on the wall shows an
+  escape pod somewhere aft.
+- **Reactor Core:** The reactor hums at a dangerous pitch. Heat shimmers off
+  the shielding.
+- **Cargo Hold:** Crates are strapped in towering stacks. Some have broken
+  loose and drift in the dark.
+- **Airlock Junction:** Pressure doors hiss and stutter. A sign reads:
+  `ESCAPE POD →`.
+- **Escape Pod:** A cramped capsule with one seat and a big red LAUNCH
+  button.
+
+### 3.3 Route Analysis (Challenge Balance)
+
+- **Shortest winning route:** 6 moves. For example,
+  `north, east, south, south, east, east` (Cryo → Medical → Central →
+  Engineering → Cargo → Airlock → Pod). There is a second 6-move route
+  through the Reactor Core.
+- **Spare oxygen on the best route:** 12 − 6 = **6**.
+- **Traps:** The Bridge / Comms Array / Mess Hall loop is a 4-move detour
+  away from the corridor that leads nowhere. Following the Engineering
+  schematic hint avoids it.
+- **Parity note:** The map is a grid, so every path from Cryo Bay to the
+  Escape Pod has an **even** number of moves. The pod can be reached on move
+  6, 8, 10, or 12, but never on an odd move. (This matters for the boundary
+  tests in Section 7.)
+
+### 3.4 Movement Commands
+
+| Input (case-insensitive, extra spaces ignored) | Meaning |
+|------------------------------------------------|---------|
+| `north`, `south`, `east`, `west` | Move in that direction |
+| `n`, `s`, `e`, `w` | Shortcuts for the four directions |
+| `go <direction>` (e.g. `go north`, `GO N`) | Same as the bare direction |
+
+### 3.5 Non-Movement Commands
+
+These commands **never** use oxygen:
+
+| Input | Effect |
+|-------|--------|
+| `look` / `l` | Shows the current room's information again (Section 3.6) |
+| `help` / `h` / `?` | Lists the available commands |
+| `quit` / `q` / `exit` | Ends the game with a goodbye message. This counts as neither a win nor a loss. |
+
+### 3.6 Room Display Format (R2)
+
+Every time the player **enters** a room, including the starting room at game
+start and the Escape Pod at the moment of winning, the game prints:
+
+```
+==================================================
+  CENTRAL CORRIDOR
+==================================================
+The ship's main artery. Emergency strip-lights pulse red
+along a passage that branches in every direction.
+
+Exits: north, east, south, west
+[ OXYGEN: 10/12 ]
+```
+
+Rules:
+- The room name appears in uppercase between two `=` rules.
+- The description follows.
+- `Exits:` lists available directions in the fixed order **north, east,
+  south, west**, skipping any the room doesn't have.
+- The oxygen gauge shows current/maximum.
+
+---
+
+## 4. Oxygen, Winning, and Losing
+
+### 4.1 Oxygen Rules (R3)
+
+1. Oxygen starts at **12**.
+2. A **successful** move to a different room lowers oxygen by exactly **1**.
+3. Blocked moves, invalid commands, empty input, `look`, `help`, and `quit`
+   use **0** oxygen.
+4. Oxygen never goes below 0.
+
+### 4.2 Turn Resolution Order
+
+When a move succeeds, the game does these steps in order:
+
+1. Move the player to the destination room.
+2. Lower oxygen by 1.
+3. Show the destination room's information (R2).
+4. Check for a **win**: the room is `escape_pod` **and** oxygen > 0. If so,
+   status becomes `WON`.
+5. Otherwise, check for a **loss**: oxygen == 0. If so, status becomes
+   `LOST`.
+6. Otherwise, keep playing.
+
+### 4.3 Boundary Interpretation
+
+`problem.md` says the player wins on reaching the pod "while they still have
+oxygen" and loses if "oxygen reaches zero before escaping." This spec reads
+"still have oxygen" as **oxygen > 0 after the move is paid for.** So:
+
+- Reaching the pod with 1 or more oxygen left after the move is a **win**.
+- If the move into the pod brings oxygen to 0, that is a **loss**. The player
+  used their last breath on the way and has nothing left when they arrive.
+
+> **Review note:** This is a judgment call. The other reading would be
+> "arriving on the last unit still wins." If you prefer that, only step 4's
+> condition changes (drop `and oxygen > 0`). Because of the parity note in
+> 3.3, this decides whether reaching the pod on move 12 wins or loses.
+
+### 4.4 End-of-Game Messages
+
+**Win** (printed after the Escape Pod room display):
+```
+>>> LAUNCH SEQUENCE INITIATED <<<
+The hatch seals behind you and the pod blasts free of the dying ship.
+You escaped with 6 oxygen to spare.
+*** YOU WIN ***
+```
+
+**Loss** (printed after the room display where oxygen hit 0):
+```
+>>> OXYGEN DEPLETED <<<
+Your vision narrows as the last of the air hisses away...
+*** GAME OVER: YOU LOST ***
+```
+
+**Quit:**
+```
+You close your eyes and let the ship drift. Transmission ended.
+```
+
+After any of these, the program exits normally with exit code 0. It does
+**not** read more input.
+
+### 4.5 Low-Oxygen Warning (flavor)
+
+When oxygen is 3 or less (and the game hasn't ended), the gauge line also
+shows `!! LOW OXYGEN !!`. This is only cosmetic and doesn't change any rule.
+
+---
+
+## 5. Handling Invalid Commands
+
+| Situation | Response | Room changes? | Oxygen used? |
+|-----------|----------|---------------|--------------|
+| Valid direction, but the room has no exit that way | `You can't go <direction> from here.` followed by the room's exits | No | **No** |
+| Unrecognized command (e.g. `fly`, `jump`) | `Unknown command: '<text>'. Type 'help' for a list of commands.` | No | **No** |
+| `go` with no direction or a bad one (`go`, `go up`) | `Go where? Try north, south, east, or west.` | No | **No** |
+| Empty or whitespace-only input | Shows the prompt again with no message | No | **No** |
+| Ctrl-D (EOF) or Ctrl-C | Prints the quit message and exits cleanly (no traceback) | n/a | n/a |
+
+Input is trimmed and lower-cased before parsing, so `  NoRtH  ` means
+`north`. The prompt is `> `.
+
+---
+
+## 6. Acceptance Criteria
+
+Each criterion has an ID. Section 7 maps every ID to at least one test.
+
+### R1: Room Navigation
+
+| ID | Criterion |
+|----|-----------|
+| AC-R1.1 | Typing `north`, `south`, `east`, or `west` when that exit exists moves the player to the connected room. |
+| AC-R1.2 | The shortcuts `n`/`s`/`e`/`w` and the form `go <direction>` behave the same as the full direction words. |
+| AC-R1.3 | Direction input ignores case and extra spaces. |
+| AC-R1.4 | Typing a valid direction with no exit shows a "can't go that way" message. |
+| AC-R1.5 | After a blocked move, the player stays in the same room. |
+| AC-R1.6 | After a blocked move, oxygen is unchanged. |
+| AC-R1.7 | Unknown commands, malformed `go`, and empty input leave the room and oxygen unchanged and never crash the game. |
+| AC-R1.8 | All exits in the map work both ways, and every room can be reached from the Cryo Bay. |
+
+### R2: Room Information
+
+| ID | Criterion |
+|----|-----------|
+| AC-R2.1 | At game start, the starting room's information is shown before the first prompt. |
+| AC-R2.2 | After every successful move, the new room's **name** is shown. |
+| AC-R2.3 | After every successful move, the new room's **description** is shown. |
+| AC-R2.4 | After every successful move, the new room's **available exits** are shown, and they match the room's actual exits. |
+| AC-R2.5 | Room information is also shown when entering the Escape Pod (the winning move) and when entering the room where oxygen hits 0 (the losing move). |
+| AC-R2.6 | Every room has a non-empty name, a non-empty description, and at least one exit. |
+
+### R3: Oxygen and Escaping
+
+| ID | Criterion |
+|----|-----------|
+| AC-R3.1 | A new game starts with exactly 12 oxygen. |
+| AC-R3.2 | Each successful move lowers oxygen by exactly 1. |
+| AC-R3.3 | Blocked moves, invalid commands, `look`, and `help` do not change oxygen. |
+| AC-R3.4 | Reaching the Escape Pod with oxygen > 0 after the move sets status to `WON` and shows a win message. |
+| AC-R3.5 | When oxygen reaches 0 anywhere other than a winning arrival, status becomes `LOST` and a loss message is shown. |
+| AC-R3.6 | Reaching the Escape Pod on the move that brings oxygen to 0 is a **loss** (see 4.3). |
+| AC-R3.7 | Once the game is `WON`, `LOST`, or `QUIT`, no more commands are processed and the program exits. |
+| AC-R3.8 | Following the shortest route (6 moves) wins with 6 oxygen left. |
+
+### General Quality
+
+| ID | Criterion |
+|----|-----------|
+| AC-G.1 | `python3 main.py` starts the game with no extra setup. |
+| AC-G.2 | `python3 -m unittest` runs all tests from the project root, and they all pass. |
+| AC-G.3 | EOF and Ctrl-C end the game cleanly without a traceback. |
+| AC-G.4 | `game.py` has no `print` or `input` calls. All I/O happens in `cli.py`. |
+
+---
+
+## 7. Automated Testing (unittest)
+
+### 7.1 Framework and Conventions
+
+- Uses only the standard-library `unittest` module.
+- Test files are named `tests/test_*.py` so `unittest` discovery finds them.
+- Tests are deterministic and need no terminal. The CLI is tested by passing
+  in fake `input_fn` and `output_fn` callables: a scripted list of inputs, and
+  a list that collects the output lines.
+- Each test creates a fresh `Game`, so no state is shared between tests.
+
+### 7.2 Test Plan
+
+| File | Test (summary) | Covers |
+|------|----------------|--------|
+| `test_world.py` | Map has 11 rooms; `START_ROOM` and `ESCAPE_ROOM` exist | AC-R2.6 |
+| | Every exit's destination exists and the reverse exit points back | AC-R1.8 |
+| | Every room can be reached from `cryo_bay` (BFS) | AC-R1.8 |
+| | Every room has a non-empty name, a description, and at least one exit | AC-R2.6 |
+| | Shortest path from start to pod is 6 (BFS) | AC-R3.8 |
+| `test_parser.py` | `north`/`n`/`go north`/`GO N`/`  North  ` all parse to move north (and the same for all 4 directions) | AC-R1.2, AC-R1.3 |
+| | `look`, `help`, `quit` and their aliases parse correctly | 3.5 |
+| | `fly`, `go`, `go up`, `""`, `"   "` parse to unknown/empty with no exception | AC-R1.7 |
+| `test_game.py` | New game: room is `cryo_bay`, oxygen is 12, status is `PLAYING` | AC-R3.1 |
+| | Valid move changes the room and lowers oxygen by 1 | AC-R1.1, AC-R3.2 |
+| | Blocked move: outcome is `BLOCKED`, room and oxygen unchanged | AC-R1.4–1.6, AC-R3.3 |
+| | Unknown, empty, look, and help: room and oxygen unchanged | AC-R1.7, AC-R3.3 |
+| | Shortest route → `WON` with oxygen 6 | AC-R3.4, AC-R3.8 |
+| | 10-move route ending at pod → `WON` with oxygen 2 | AC-R3.4 |
+| | 12-move route ending at pod → `LOST` (boundary) | AC-R3.6 |
+| | 12 moves of back-and-forth without reaching the pod → `LOST` | AC-R3.5 |
+| | After `WON` or `LOST`, `handle()` makes no further state changes | AC-R3.7 |
+| | 11 blocked moves then 1 real move: oxygen is 11 (blocked moves are free) | AC-R1.6, AC-R3.3 |
+| `test_cli.py` | Output starts with the Cryo Bay name, description, and exits before the first prompt | AC-R2.1 |
+| | After each move, output has the new room's name, description, and correct `Exits:` line | AC-R2.2–2.4 |
+| | Winning playthrough: pod room info is printed, then `YOU WIN`; loop ends with inputs left over | AC-R2.5, AC-R3.4, AC-R3.7 |
+| | Losing playthrough: final room info is printed, then `GAME OVER` | AC-R2.5, AC-R3.5 |
+| | Blocked move prints the "can't go" message | AC-R1.4 |
+| | Unknown command prints the "Unknown command" message | AC-R1.7 |
+| | `input_fn` raising `EOFError` or `KeyboardInterrupt` → quit message, no exception | AC-G.3 |
+| | `game.py` source has no `print(` or `input(` (static check) | AC-G.4 |
+
+Example scripted paths:
+- **Shortest win (6):** `n, e, s, s, e, e`
+- **10-move win:** `n, s, n, s, n, e, s, s, e, e`
+- **12-move pod arrival (loss):** `n, s, n, s, n, s, n, e, s, s, e, e`
+- **Wander loss (12):** `n, s` repeated 6 times
+
+### 7.3 Running Tests
+
+From the project root:
+
+```bash
+python3 -m unittest            # quiet
+python3 -m unittest -v         # verbose, one line per test
+```
+
+---
+
+## 8. Running the Game
+
+From the project root, with one command:
+
+```bash
+python3 main.py
+```
+
+No install step, virtual environment, or dependencies are needed.
+
+---
+
+## 9. Extensibility for Later Rounds (design only; NOT implemented now)
+
+The Round 1 design leaves clear places for future features. **None of the
+following will be built in Round 1.**
+
+| Future feature | Where it will plug in |
+|----------------|-----------------------|
+| **Inventory** (`take`, `drop`, `inventory`) | Add an `items` field to `Room` and an `inventory` to `Game`. Add new `Command.kind` values in `parser.py` and handlers in `Game.handle`. The CLI loop doesn't change. |
+| **Hazards** (e.g. a reactor leak that costs extra oxygen) | Add a hook in `Game` after "enter room" (step 3 in 4.2) that can change oxygen or status. Rooms get an optional hazard attribute. |
+| **Puzzles / locked doors** | Exits can later point to a small `Exit` object (destination + optional lock condition). Movement already goes through a single method, `Game._move()`, so lock checks go in one place. |
+| **Save / load** | All game state lives in plain data on `Game` (room id, oxygen, status). Later rounds add `to_dict()` / `from_dict()` and JSON storage. The map is rebuilt from `build_ship()`, so only player state needs saving. |
+| **New commands in general** | `Game.handle` sends each command to a handler using a dict of `kind → method`, so adding a command means adding one parser rule and one handler. |
+
+Round 1 code must **not** include stub fields, placeholder commands, or unused
+hooks for these features. The structure above is enough to add them cleanly
+later.
+
+---
+
+## 10. Out of Scope for Round 1
+
+Items, inventory, hazards, puzzles, locked doors, save/load, randomness,
+color output, sound, difficulty levels, and score tracking.
