@@ -1,6 +1,6 @@
 """Command parsing tests for signal_lost.parser.
 
-Every test name starts with the requirement it checks (R1, R2, or R3), and
+Every test name starts with the requirement it checks (R1-R5), and
 its docstring names the acceptance criterion from spec.md Section 6.
 """
 
@@ -110,6 +110,30 @@ class InvalidInputParsingTests(unittest.TestCase):
     def test_R1_parse_does_not_mutate_anything(self):
         """R1 (spec 2.1): parsing the same text twice gives equal results."""
         self.assertEqual(parse("go north"), parse("go north"))
+
+
+class Round2CommandParsingTests(unittest.TestCase):
+    def test_R4_map_and_its_alias_parse_to_map(self):
+        """R4 (AC-R4.1): 'map' and 'm' are the map command, ignoring case and spaces."""
+        for text in ("map", "m", "MAP", "  Map  ", "M"):
+            with self.subTest(text=text):
+                self.assertEqual(parse(text), Command("map"))
+
+    def test_R5_scan_and_its_alias_parse_to_scan(self):
+        """R5 (AC-R5.1): 'scan' and 'sc' are the scan command, ignoring case and spaces."""
+        for text in ("scan", "sc", "SCAN", "  Scan ", "SC"):
+            with self.subTest(text=text):
+                self.assertEqual(parse(text), Command("scan"))
+
+    def test_R5_s_still_means_south_not_scan(self):
+        """R5 (AC-R5.1) and R1 (AC-R1.2): the scan alias does not take over 's'."""
+        self.assertEqual(parse("s"), Command("move", "south"))
+
+    def test_R4_map_and_scan_with_extra_words_are_unknown(self):
+        """R4 (AC-R4.1) and R5 (AC-R5.1): only the bare words are commands."""
+        for text in ("map room", "scan north", "go map"):
+            with self.subTest(text=text):
+                self.assertEqual(parse(text).kind, "unknown")
 
 
 if __name__ == "__main__":

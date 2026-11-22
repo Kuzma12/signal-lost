@@ -17,6 +17,8 @@ _COMMAND_ALIASES = {
     "look": "look", "l": "look",
     "help": "help", "h": "help", "?": "help",
     "quit": "quit", "q": "quit", "exit": "quit",
+    "map": "map", "m": "map",
+    "scan": "scan", "sc": "scan",
 }
 
 _GO = "go"
@@ -27,7 +29,7 @@ class Command:
     """A parsed player command.
 
     ``kind`` is one of ``"move"``, ``"help"``, ``"look"``, ``"quit"``,
-    ``"empty"``, or ``"unknown"``. ``arg`` is the direction for a move,
+    ``"map"``, ``"scan"``, ``"empty"``, or ``"unknown"``. ``arg`` is the direction for a move,
     the text the player typed (trimmed) for unknown input, and ``None``
     otherwise.
     """
