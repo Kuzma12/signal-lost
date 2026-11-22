@@ -1,6 +1,6 @@
-# Signal Lost: Specification (Rounds 1-4)
+# Signal Lost: Specification (Rounds 1-5)
 
-This spec covers Rounds 1 to 4 of *Signal Lost*.
+This spec covers Rounds 1 to 5 of *Signal Lost*.
 
 - **Round 1** defines how requirements **R1 (Room Navigation)**, **R2 (Room
   Information)**, and **R3 (Oxygen and Escaping)** from `problem.md` are
@@ -19,10 +19,20 @@ This spec covers Rounds 1 to 4 of *Signal Lost*.
   step to the turn order (Section 4.2), a second way to lose, and the first
   item that is used up (the medkit). Everything else from Rounds 1-3
   behaves as before.
+- **Round 5** adds **R10 (Keycard and Locked Escape Pod)** and **revises
+  R3's escape condition**: the Escape Pod door starts locked and must be
+  unlocked with the keycard before the player can win. The design is in
+  Section 3.11, the revised escape rule (with the original R3 wording kept
+  for history) is in Section 4.6, and the acceptance criteria are in
+  Section 6. Earlier sections are not rewritten; where Round 5 changes
+  something they say, a "(Round 5)" note points to the new text.
 
 Inventory (Round 3) and hazards (Round 4) are now built. Features still
 planned for later rounds (puzzles / locked doors and save/load) are **out
 of scope**. Section 9 only describes where they will fit.
+
+(Round 5) The locked Escape Pod door is now built (Section 3.11). Other
+puzzles and locked doors, and save/load, are still out of scope.
 
 ---
 
@@ -126,6 +136,12 @@ lets later rounds add features without rewriting the loop.
 - **Constants** in `game.py`: `STARTING_OXYGEN = 12`, `OXYGEN_PER_MOVE = 1`.
   From Round 4: `STARTING_HEALTH = 10` (also the maximum), `HAZARD_DAMAGE = 2`,
   `MEDKIT = "medkit"`, `MEDKIT_HEALING = 4`.
+- (Round 5) `world.py` adds `KEYCARD_READER = "airlock_junction"`, the room
+  where the keycard works. `game.py` adds `KEYCARD = "keycard"`, a
+  `pod_locked: bool` field on `Game` (`True` in a new game), and the
+  outcomes `LOCKED` (tried to enter the locked pod), `UNLOCKED`,
+  `ALREADY_UNLOCKED`, and `WRONG_PLACE` (keycard used away from the
+  reader). `TurnResult` gains no new fields.
 
 ---
 
@@ -205,6 +221,10 @@ each stays 1–3 sentences):
   6, 8, 10, or 12, but never on an odd move. (This matters for the boundary
   tests in Section 7.)
 
+(Round 5) The 6-move routes no longer win, because they skip the Bridge
+and so never pick up the keycard. The new shortest winning route is 8
+moves; see Section 3.11. The parity note still holds.
+
 ### 3.4 Movement Commands
 
 | Input (case-insensitive, extra spaces ignored) | Meaning |
@@ -228,6 +248,9 @@ These commands **never** use oxygen:
 | `use <item>` | (Round 4, R9) Uses a carried item; only the medkit does anything (Section 3.10) |
 | `help` / `h` / `?` | Lists the available commands |
 | `quit` / `q` / `exit` | Ends the game with a goodbye message. This counts as neither a win nor a loss. |
+
+(Round 5) `use keycard` at the Airlock Junction unlocks the Escape Pod door
+(Section 3.11). It is also free.
 
 ### 3.6 Room Display Format (R2)
 
@@ -477,6 +500,70 @@ other than `take` and `drop`. The one change is that a medkit that has been
 used is no longer anywhere: not in a room and not in the inventory. So the
 ship holds four items until the medkit is used, and three after.
 
+### 3.11 Keycard and the Locked Escape Pod (R10, Round 5)
+
+**The lock.** The only locked door on the ship is the one from the
+Airlock Junction into the Escape Pod. It is locked when a game starts
+(`Game.pod_locked` is `True`). The Escape Pod is still listed in the
+Airlock Junction's exits, and the `Exits:` line does not change: the
+Airlock Junction still shows `Exits: north, east, west`.
+
+**Trying the locked door.** A move into the Escape Pod while the door is
+locked is refused, like a blocked move:
+
+```
+The escape pod door is locked.
+A keycard reader beside it blinks red.
+Exits: north, east, west
+```
+
+The outcome is `LOCKED`. The player stays in the Airlock Junction, and
+oxygen, health, status, the visited rooms, and items do not change. The
+lock check happens before the room changes (Section 4.2), so a refused
+move never costs oxygen or health and never adds the pod to the map.
+
+**Unlocking.** The keycard starts on the Bridge (Section 3.9). The player
+takes it and types `use keycard` at the Airlock Junction (`KEYCARD_READER`
+in `world.py`). `use` follows the same order as Section 3.10: first
+"carried?", then "which item?". For the keycard:
+
+| Input | Case | Output | State change |
+|-------|------|--------|--------------|
+| `use keycard` | not carrying the keycard | `You are not carrying 'keycard'.` (outcome `NOT_CARRIED`) | none |
+| | carried, in any room except the Airlock Junction | `The keycard doesn't work here.` (outcome `WRONG_PLACE`) | none |
+| | carried, at the Airlock Junction, door locked | `You swipe the keycard. The reader blinks green.` then `The escape pod door is unlocked.` (outcome `UNLOCKED`) | the door is unlocked |
+| | carried, at the Airlock Junction, door already unlocked | `The escape pod door is already unlocked.` (outcome `ALREADY_UNLOCKED`) | none |
+
+Using the keycard costs no oxygen or health and never changes the room,
+status, or visited rooms. The keycard is **not** used up: it stays in the
+inventory and can be dropped and taken like any item, so the ship always
+holds the four items until the medkit is used (Section 3.10). The
+flashlight and repair kit still say `You can't use the <item>.`
+
+**Staying unlocked.** Once unlocked, the door stays unlocked for the rest
+of the game, even if the keycard is dropped. There is no way to lock it
+again.
+
+**Winning.** With the door unlocked, a move into the Escape Pod follows
+the normal turn order (Section 4.2): it costs 1 oxygen, and the player
+wins only if oxygen is above 0 after the move (Section 4.3) and health is
+above 0. See Section 4.6 for the revised R3 escape rule.
+
+**Balance.** The Bridge is a dead end off the Central Corridor, so the
+keycard costs a 2-move detour (north to the Bridge and back). The shortest
+winning routes take **8 moves**:
+
+- `north, east, north, take keycard, south, south, south, east, use
+  keycard, east` (through the Cargo Hold), and
+- `north, east, north, take keycard, south, south, east, south, use
+  keycard, east` (through the Reactor Core).
+
+Both pass one hazard and win with **4 oxygen and 8 health**, so the game
+is still winnable from 12 oxygen and 10 health without healing (R3, R8).
+Every winning route has 8 or 10 moves (by exhaustive search; 12 is a loss
+by Section 4.3). The lock only refuses moves, so the Round 4 health
+analysis in Section 3.10 is unchanged.
+
 ---
 
 ## 4. Oxygen, Winning, and Losing
@@ -508,6 +595,11 @@ destination is a hazard room, health goes down by 2 (never below 0). Before
 the win check in step 4, if health is 0, status becomes `LOST` with outcome
 `DIED`, and the win and oxygen checks are skipped. Section 3.10 has the
 details.
+
+(Round 5) Before step 1, if the destination is the Escape Pod and the door
+is still locked, the move is refused with outcome `LOCKED` and none of the
+steps run (Section 3.11). A move into the pod can therefore only reach
+the win check once the door is unlocked.
 
 ### 4.3 Boundary Interpretation
 
@@ -554,6 +646,34 @@ After any of these, the program exits normally with exit code 0. It does
 When oxygen is 3 or less (and the game hasn't ended), the gauge line also
 shows `!! LOW OXYGEN !!`. This is only cosmetic and doesn't change any rule.
 
+### 4.6 Revised Escape Requirement (R3, Round 5)
+
+**Original R3 escape condition (Rounds 1-4, kept for history).** From
+`problem.md`, Initial requirements: "The goal is to find the escape pod
+before running out of oxygen. If they reach the escape pod while they
+still have oxygen, they win." Sections 4.2-4.4 and AC-R3.4 / AC-R3.8 built
+this rule, and it held through Round 4.
+
+**Revised condition (Round 5).** From `problem.md`, Round 5 requirements:
+the player must also unlock the escape pod door with the keycard before
+they can escape, still needs oxygen and health remaining to win, and
+reaching the escape pod without unlocking the door no longer counts as a
+win. The revision replaces the earlier escape condition; the original
+oxygen rules still apply.
+
+So from Round 5, the player wins when **all** of these are true after a
+move into the Escape Pod:
+
+1. The door was unlocked with the keycard before the move (Section 3.11).
+   While it is locked, the move never happens, so it can never win.
+2. Oxygen is above 0 after paying for the move (unchanged, Section 4.3).
+   Arriving on move 12 with 0 oxygen is still a loss.
+3. Health is above 0 (unchanged from Round 4; a hazard can't hit on the
+   way into the pod, because the pod is not a hazard room).
+
+The oxygen rules in 4.1, the oxygen loss in step 5 of 4.2, the boundary in
+4.3, and the win and loss messages in 4.4 are unchanged.
+
 ---
 
 ## 5. Handling Invalid Commands
@@ -568,6 +688,10 @@ shows `!! LOW OXYGEN !!`. This is only cosmetic and doesn't change any rule.
 
 Input is trimmed and lower-cased before parsing, so `  NoRtH  ` means
 `north`. The prompt is `> `.
+
+(Round 5) Trying to enter the locked Escape Pod is answered like a blocked
+move, with the lock message from Section 3.11 and the room's exits. The
+room, oxygen, and health do not change.
 
 ---
 
@@ -612,6 +736,20 @@ Each criterion has an ID. Section 7 maps every ID to at least one test.
 | AC-R3.7 | Once the game is `WON`, `LOST`, or `QUIT`, no more commands are processed and the program exits. |
 | AC-R3.8 | Following the shortest route (6 moves) wins with 6 oxygen left. |
 
+(Round 5) R3's escape condition was revised (Section 4.6). The rows above
+are kept as written for history. **AC-R3.4** is replaced by AC-R3.10, and
+**AC-R3.8** is replaced by AC-R3.11. AC-R3.1-3.3 and AC-R3.5-3.7 still
+apply unchanged; AC-R3.6 now needs the door unlocked to be tested.
+
+### R3: Revised Escape Requirement (Round 5)
+
+| ID | Criterion |
+|----|-----------|
+| AC-R3.9 | Reaching the Escape Pod without unlocking the door is not a win: the move is refused, and the status stays `PLAYING`. |
+| AC-R3.10 | With the door unlocked, entering the Escape Pod with oxygen > 0 and health > 0 after the move sets status to `WON` and shows the win message. (Replaces AC-R3.4.) |
+| AC-R3.11 | The shortest winning route takes 8 moves (including the keycard detour to the Bridge) and wins with 4 oxygen and 8 health; no shorter route wins. (Replaces AC-R3.8.) |
+| AC-R3.12 | The original oxygen rules still apply with the door unlocked: entering the pod on the move that brings oxygen to 0 is a loss, and a 10-move win ends with 2 oxygen. |
+
 ### R4: Ship Map (Round 2)
 
 | ID | Criterion |
@@ -648,6 +786,10 @@ Each criterion has an ID. Section 7 maps every ID to at least one test.
 | AC-R6.6 | Taking an item uses no oxygen and does not change the room or status. Collecting items along the shortest route still wins with 6 oxygen. |
 | AC-R6.7 | Item names must be typed in full (case and spaces ignored); a partial name such as `kit` does not match. |
 
+(Round 5) The second sentence of AC-R6.6 refers to the old 6-move route.
+From Round 5, taking items still costs no oxygen, and collecting items
+along the 8-move keycard route still wins with 4 oxygen (AC-R3.11).
+
 ### R7: Inventory System (Round 3)
 
 | ID | Criterion |
@@ -678,6 +820,10 @@ that, AC-R9.7 applies instead.
 | AC-R8.8 | The player can escape without healing: both 6-move routes win with 8 health and 6 oxygen. |
 | AC-R8.9 | Health and hazard output fits in 50 columns. |
 
+(Round 5) AC-R8.8 refers to the 6-move routes, which no longer win. The
+R8 goal still holds: both 8-move keycard routes win without healing, with
+8 health and 4 oxygen (AC-R3.11, AC-R10.8).
+
 ### R9: Medkit Healing (Round 4)
 
 | ID | Criterion |
@@ -689,6 +835,24 @@ that, AC-R9.7 applies instead.
 | AC-R9.5 | `use medkit` at full health says so, keeps the medkit, and changes nothing. |
 | AC-R9.6 | Using an item uses no oxygen and does not change the room, status, or visited rooms. |
 | AC-R9.7 | Other items work as before: `use` on any other carried item says it can't be used and changes nothing, and `take`, `drop`, and `inventory` still work for every item, including the medkit before it is used. Items are never duplicated or lost, except that a used medkit is no longer in any room or the inventory. |
+
+(Round 5) From Round 5 the keycard is an exception to "any other carried
+item": it follows AC-R10.3-10.6. The flashlight and repair kit still can't
+be used. The keycard is never used up, so the item count rule is unchanged.
+
+### R10: Keycard and Locked Escape Pod (Round 5)
+
+| ID | Criterion |
+|----|-----------|
+| AC-R10.1 | A new game starts with the Escape Pod door locked, and the keycard on the Bridge. |
+| AC-R10.2 | Moving into the Escape Pod while the door is locked shows `The escape pod door is locked.`, the keycard-reader hint, and the exits. The player stays in the Airlock Junction, and oxygen, health, status, visited rooms, and items do not change. This holds every time it is tried. |
+| AC-R10.3 | With the keycard carried, `use keycard` at the Airlock Junction unlocks the door and says so; the next move east enters the Escape Pod. |
+| AC-R10.4 | Unlocking uses no oxygen or health, does not change the room, status, or visited rooms, and does not use up the keycard (it stays in the inventory). |
+| AC-R10.5 | `use keycard` with the keycard carried in any room other than the Airlock Junction says `The keycard doesn't work here.` and changes nothing. |
+| AC-R10.6 | `use keycard` without carrying the keycard says the player is not carrying it, and the door stays locked. |
+| AC-R10.7 | Once unlocked, the door stays unlocked even if the keycard is dropped; `use keycard` at the Airlock Junction again says `The escape pod door is already unlocked.` and changes nothing. |
+| AC-R10.8 | The game is still winnable from 12 oxygen and 10 health without healing, using the keycard (8-move routes, 4 oxygen and 8 health left). |
+| AC-R10.9 | The Airlock Junction's `Exits:` line is unchanged by the lock, `help` still lists `use`, and all new output fits in 50 columns. |
 
 ### General Quality
 
@@ -795,6 +959,24 @@ Round 4 additions:
 | | Health ending text, including when oxygen hits 0 on the same move | AC-R8.6, AC-R8.7 |
 | | `use` messages from 3.10; `help` lists `use`; all new output fits 50 columns | AC-R9.1-9.5, AC-R8.9 |
 
+Round 5 additions:
+
+| File | Test (summary) | Covers |
+|------|----------------|--------|
+| `test_world.py` | `KEYCARD_READER` is the Airlock Junction, next to the pod; the keycard starts on the Bridge | AC-R10.1 |
+| `test_parser.py` | `use keycard` / `  USE  KeyCard ` parse to use with the name `keycard` | AC-R10.3 |
+| `test_game.py` | New game has the pod locked; a locked move gives `LOCKED` and changes nothing, even when repeated or done at low oxygen | AC-R10.1, AC-R10.2, AC-R3.9 |
+| | `use keycard`: unlocks at the Airlock, is free, keeps the keycard; wrong room, not carried, and already unlocked change nothing; dropping the keycard keeps the door open | AC-R10.3-10.7 |
+| | Keycard routes: 8-move routes win with 4 oxygen and 8 health; no route without the keycard wins; 10-move win ends with 2 oxygen; 12-move pod arrival is a loss | AC-R3.10-3.12, AC-R10.8 |
+| | The flashlight and repair kit still can't be used; item count is unchanged after unlocking | AC-R9.7 |
+| `test_cli.py` | Locked-door message and exits; unlock, already-unlocked, and wrong-place messages | AC-R10.2-10.7 |
+| | Full keycard playthrough wins; the Airlock exits line is unchanged; new output fits 50 columns | AC-R3.10, AC-R10.8, AC-R10.9 |
+
+(Round 5) Existing Round 1-4 tests whose scripted routes walked straight
+into the pod are given the keycard detour, because the revised R3 makes
+those routes stop at the locked door instead of winning. The paths below
+marked "Round 1" and "Round 4" keep their historical wording.
+
 Example scripted paths:
 - **Shortest win (6):** `n, e, s, s, e, e`
 - **10-move win:** `n, s, n, s, n, e, s, s, e, e`
@@ -802,6 +984,15 @@ Example scripted paths:
 - **Wander loss (12):** `n, s` repeated 6 times
 - **(Round 4) Hazard death (12):** `n, e, s, e`, then `w, e` repeated 4
   times (the Reactor Core five times; health and oxygen both reach 0)
+- **(Round 5) Keycard win (8):** `n, e, n, take keycard, s, s, s, e, use
+  keycard, e` (4 oxygen, 8 health). Through the Reactor Core: `n, e, n,
+  take keycard, s, s, e, s, use keycard, e`.
+- **(Round 5) 10-move keycard win:** `n, s, n, e, n, take keycard, s, s,
+  s, e, use keycard, e` (2 oxygen)
+- **(Round 5) 12-move keycard pod arrival (loss):** `n, s, n, s, n, e, n,
+  take keycard, s, s, s, e, use keycard, e`
+- **(Round 5) Locked door:** `n, e, s, s, e, e` now stops at the Airlock
+  Junction with the lock message, with 7 oxygen and 8 health.
 
 ### 7.3 Running Tests
 
@@ -835,6 +1026,11 @@ following will be built in Round 1.**
 > built; the rows below say where. Puzzles / locked doors and save/load are
 > still not implemented. Save/load now also needs `visited`, `room_items`,
 > `inventory`, and `health` (Sections 3.7, 3.9, 3.10).
+>
+> **Status after Round 5:** The locked Escape Pod door is built as a single
+> `pod_locked` flag on `Game`, checked in `Game._move()` before the room
+> changes (Section 3.11). A general `Exit` object was not needed for one
+> door. Save/load also needs `pod_locked`.
 
 | Future feature | Where it will plug in |
 |----------------|-----------------------|
@@ -876,3 +1072,11 @@ Hazards that cost oxygen or change over time, random damage, other ways to
 heal, a low-health warning, health in the win message, uses for the
 flashlight, keycard, or repair kit, locked doors, puzzles, and save/load
 are out of scope.
+
+### Round 5
+
+Round 5 adds only the locked Escape Pod door and the keycard (R10) and
+the revised escape condition (R3). Other locked doors, other puzzles,
+re-locking the door, a keycard that is used up, marking locked exits on the
+`Exits:` line or the map, changing scan clues or room descriptions, uses
+for the flashlight or repair kit, and save/load are out of scope.
