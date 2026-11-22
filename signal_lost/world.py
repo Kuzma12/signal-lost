@@ -109,7 +109,8 @@ _ROOM_DATA = [
             "south": "engineering",
         },
         "A faint heat signature runs south, toward the engine "
-        "rooms. The rooms to the north and east read cold and still.",
+        "rooms. Security logs place the captain's keycard on the "
+        "Bridge, just north.",
     ),
     (
         "bridge",
@@ -118,7 +119,8 @@ _ROOM_DATA = [
         "slowly past. The ship is tumbling.",
         {"south": "central_corridor", "east": "comms_array"},
         "The nav log shows the escape pod docked aft, beyond "
-        "Engineering. Nothing forward of here leads off the ship.",
+        "Engineering. Its hatch answers only to a crew keycard, so "
+        "don't leave without one.",
     ),
     (
         "comms_array",

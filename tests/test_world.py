@@ -223,6 +223,46 @@ class RoomClueTests(unittest.TestCase):
                 self.assertTrue(1 <= len(sentences) <= 2, room.clue)
 
 
+class Round5ClueTests(unittest.TestCase):
+    """R5 with R10: the Bridge is now required (it holds the keycard), so the
+    Central Corridor and Bridge clues point toward it (spec.md 3.8, Round 5
+    clarification)."""
+
+    def setUp(self):
+        self.corridor = build_ship()["central_corridor"].clue
+        self.bridge = build_ship()["bridge"].clue
+
+    def test_R5_R10_corridor_clue_points_north_to_the_keycard_on_the_bridge(self):
+        """R5 (AC-R5.7): the Central Corridor clue names the keycard, the Bridge, and north."""
+        for word in ("keycard", "Bridge", "north"):
+            with self.subTest(word=word):
+                self.assertIn(word, self.corridor)
+
+    def test_R5_R10_corridor_clue_still_points_south_toward_the_exit(self):
+        """R5 (AC-R5.7): the original hint toward the engine rooms is kept."""
+        self.assertIn("south", self.corridor)
+        self.assertIn("engine rooms", self.corridor)
+
+    def test_R5_R10_bridge_clue_says_the_pod_needs_a_keycard(self):
+        """R5 (AC-R5.7): the Bridge clue tells the player to take the keycard along."""
+        self.assertIn("escape pod", self.bridge)
+        self.assertIn("keycard", self.bridge)
+
+    def test_R5_R10_clues_no_longer_steer_players_away_from_the_bridge(self):
+        """R5 (AC-R5.7): the Round 2 wording that called the Bridge a dead end is gone."""
+        for phrase in ("cold and still", "Nothing forward of here leads off the ship"):
+            with self.subTest(phrase=phrase):
+                self.assertNotIn(phrase, self.corridor)
+                self.assertNotIn(phrase, self.bridge)
+
+    def test_R5_R10_keycard_clues_do_not_give_away_the_whole_solution(self):
+        """R5 (AC-R5.7): neither clue says where or how the keycard is used."""
+        for phrase in ("Airlock", "airlock", "reader", "use keycard", "unlock"):
+            with self.subTest(phrase=phrase):
+                self.assertNotIn(phrase, self.corridor)
+                self.assertNotIn(phrase, self.bridge)
+
+
 # Starting item placement from spec.md Section 3.9.
 EXPECTED_ITEMS = {
     "cryo_bay": ("flashlight",),

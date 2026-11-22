@@ -225,6 +225,12 @@ each stays 1–3 sentences):
 and so never pick up the keycard. The new shortest winning route is 8
 moves; see Section 3.11. The parity note still holds.
 
+(Round 5 clarification) The "Traps" bullet above is kept as written, but
+the **Bridge** is no longer part of the trap: it holds the keycard, so it
+is a required 2-move detour (north from the Central Corridor and back).
+Only the Comms Array and Mess Hall are still a dead end. The scanner clues
+were corrected to match (Section 3.8).
+
 ### 3.4 Movement Commands
 
 | Input (case-insensitive, extra spaces ignored) | Meaning |
@@ -351,6 +357,23 @@ Typing `scan` (or `sc`) shows the current room's clue:
 - Clues point toward the escape route or warn about dead ends, so scanning
   is a free way to plan with limited oxygen. The Escape Pod has a clue too,
   even though entering it ends the game, so every room meets the rule above.
+
+**(Round 5 clarification) Corrected clues.** The revised R3 and R10 make
+the Bridge required, because the keycard is there. Two Round 2 clues told
+the player to stay away from it, which would now mislead them, so they are
+corrected. Every rule above still holds (one or two sentences, unique,
+plain ASCII, free, repeatable). The other nine clues are unchanged.
+
+| Room | Round 2 clue (kept here for history) | Clue from Round 5 |
+|------|--------------------------------------|-------------------|
+| Central Corridor | `A faint heat signature runs south, toward the engine rooms. The rooms to the north and east read cold and still.` | `A faint heat signature runs south, toward the engine rooms. Security logs place the captain's keycard on the Bridge, just north.` |
+| Bridge | `The nav log shows the escape pod docked aft, beyond Engineering. Nothing forward of here leads off the ship.` | `The nav log shows the escape pod docked aft, beyond Engineering. Its hatch answers only to a crew keycard, so don't leave without one.` |
+
+The new clues tell the player **where** the keycard is and **that** the pod
+needs it. They don't say where it is used (the Airlock Junction reader) or
+which command to type; the lock message (Section 3.11) gives that hint when
+the player reaches the door. The Mess Hall clue ("This end of the ship
+loops back on itself") is still accurate and is unchanged.
 
 ### 3.9 Items and Inventory (R6, R7, Round 3)
 
@@ -774,6 +797,13 @@ apply unchanged; AC-R3.6 now needs the door unlocked to be tested.
 | AC-R5.5 | The same room can be scanned more than once, and it gives the same clue each time. |
 | AC-R5.6 | Scanner output fits in 50 columns. |
 
+(Round 5 clarification) AC-R5.1-5.6 still apply unchanged. AC-R5.7 is
+added because the Bridge became required in Round 5.
+
+| ID | Criterion |
+|----|-----------|
+| AC-R5.7 | (Round 5) No clue steers the player away from the Bridge. The Central Corridor clue says the keycard is on the Bridge to the north and still points south toward the engine rooms; the Bridge clue says the escape pod needs a keycard. Neither clue says where or how the keycard is used. |
+
 ### R6: Collecting Items (Round 3)
 
 | ID | Criterion |
@@ -971,6 +1001,8 @@ Round 5 additions:
 | | The flashlight and repair kit still can't be used; item count is unchanged after unlocking | AC-R9.7 |
 | `test_cli.py` | Locked-door message and exits; unlock, already-unlocked, and wrong-place messages | AC-R10.2-10.7 |
 | | Full keycard playthrough wins; the Airlock exits line is unchanged; new output fits 50 columns | AC-R3.10, AC-R10.8, AC-R10.9 |
+| `test_world.py` | (Round 5 clarification) Corridor clue names the keycard, the Bridge, and north, and still points south; Bridge clue says the pod needs a keycard; the old "cold and still" / "Nothing forward" wording is gone; neither clue mentions the airlock, the reader, or `use keycard` | AC-R5.7 |
+| `test_cli.py` | (Round 5 clarification) Scanning the Corridor and the Bridge shows the keycard hint within 50 columns | AC-R5.7, AC-R5.6 |
 
 (Round 5) Existing Round 1-4 tests whose scripted routes walked straight
 into the pod are given the keycard detour, because the revised R3 makes
@@ -1080,3 +1112,8 @@ the revised escape condition (R3). Other locked doors, other puzzles,
 re-locking the door, a keycard that is used up, marking locked exits on the
 `Exits:` line or the map, changing scan clues or room descriptions, uses
 for the flashlight or repair kit, and save/load are out of scope.
+
+(Round 5 clarification) One exception to the list above: the Central
+Corridor and Bridge scan clues were corrected, because they told the
+player to avoid the Bridge, which R10 makes required (Section 3.8, AC-R5.7).
+Room descriptions and every other clue are unchanged.

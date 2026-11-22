@@ -1073,6 +1073,16 @@ class KeycardOutputTests(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertLessEqual(len(line), 50)
 
+    def test_R5_R10_corridor_and_bridge_scans_hint_at_the_keycard(self):
+        """R5 (AC-R5.7, AC-R5.6): both scans mention the keycard and fit 50 columns."""
+        turns = Session(["n", "e", "scan", "n", "scan"]).turns()
+        for index, room in ((3, "CENTRAL CORRIDOR"), (5, "BRIDGE")):
+            with self.subTest(room=room):
+                self.assertIn(f"[ SCAN: {room} ]", turns[index])
+                self.assertIn("keycard", turns[index])
+                for line in turns[index].splitlines():
+                    self.assertLessEqual(len(line), 50)
+
     def test_R10_help_still_lists_use(self):
         """R10 (AC-R10.9): 'use <item>' is still in help; no new command."""
         self.assertIn("use <item>", Session(["help"]).turns()[1])
