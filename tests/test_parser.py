@@ -1,6 +1,6 @@
 """Command parsing tests for signal_lost.parser.
 
-Every test name starts with the requirement it checks (R1-R9), and
+Every test name starts with the requirement it checks (R1-R10), and
 its docstring names the acceptance criterion from spec.md Section 6.
 """
 
@@ -207,6 +207,12 @@ class ItemParsingTests(unittest.TestCase):
         self.assertEqual(parse("i"), Command("inventory"))
         self.assertEqual(parse("go east"), Command("move", "east"))
         self.assertFalse(is_go_attempt(parse("use medkit")))
+
+    def test_R10_use_keycard_parses_to_use_with_the_keycard(self):
+        """R10 (AC-R10.3): 'use keycard' needs no new parser rule."""
+        for text in ("use keycard", "  USE   KeyCard ", "Use KEYCARD"):
+            with self.subTest(text=text):
+                self.assertEqual(parse(text), Command("use", "keycard"))
 
 
 if __name__ == "__main__":
