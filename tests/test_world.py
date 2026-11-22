@@ -1,13 +1,20 @@
 """Map integrity tests for signal_lost.world.
 
-Every test name starts with the requirement it checks (R1, R2, or R3), and
+Every test name starts with the requirement it checks (R1-R5), and
 its docstring names the acceptance criterion from spec.md Section 6.
 """
 
 import unittest
 from collections import deque
 
-from signal_lost.world import DIRECTIONS, ESCAPE_ROOM, START_ROOM, Room, build_ship
+from signal_lost.world import (
+    DIRECTIONS,
+    ESCAPE_ROOM,
+    MAP_GRID,
+    START_ROOM,
+    Room,
+    build_ship,
+)
 
 OPPOSITE = {"north": "south", "south": "north", "east": "west", "west": "east"}
 
@@ -145,6 +152,73 @@ class ShipMapTests(unittest.TestCase):
             for destination in room.exits.values():
                 with self.subTest(room=room.id, destination=destination):
                     self.assertNotEqual(distances[room.id] % 2, distances[destination] % 2)
+
+
+# Grid step for each direction: (row change, column change). spec.md 3.7.
+GRID_STEP = {"north": (-1, 0), "south": (1, 0), "east": (0, 1), "west": (0, -1)}
+
+
+class ShipMapLayoutTests(unittest.TestCase):
+    """R4: the grid positions the map is drawn from (spec.md 3.7)."""
+
+    def setUp(self):
+        self.rooms = build_ship()
+
+    def test_R4_every_room_has_a_grid_position(self):
+        """R4 (AC-R4.8): MAP_GRID has a position for exactly the rooms on the ship."""
+        self.assertEqual(set(MAP_GRID), set(self.rooms))
+
+    def test_R4_grid_positions_are_unique_and_inside_a_4_by_4_grid(self):
+        """R4 (AC-R4.8): no two rooms share a cell, and all cells fit 4 x 4."""
+        positions = list(MAP_GRID.values())
+        self.assertEqual(len(positions), len(set(positions)))
+        for room_id, (row, col) in MAP_GRID.items():
+            with self.subTest(room=room_id):
+                self.assertIn(row, range(4))
+                self.assertIn(col, range(4))
+
+    def test_R4_every_exit_joins_rooms_that_are_neighbors_on_the_grid(self):
+        """R4 (AC-R4.8): an east exit leads one column right, south one row down, etc."""
+        for room in self.rooms.values():
+            row, col = MAP_GRID[room.id]
+            for direction, destination in room.exits.items():
+                with self.subTest(room=room.id, direction=direction):
+                    d_row, d_col = GRID_STEP[direction]
+                    self.assertEqual(MAP_GRID[destination], (row + d_row, col + d_col))
+
+
+class RoomClueTests(unittest.TestCase):
+    """R5: every room carries its own scanner clue (spec.md 3.8)."""
+
+    def setUp(self):
+        self.rooms = build_ship()
+
+    def test_R5_every_room_has_a_non_empty_clue(self):
+        """R5 (AC-R5.2): each room's clue is a non-empty string."""
+        for room in self.rooms.values():
+            with self.subTest(room=room.id):
+                self.assertIsInstance(room.clue, str)
+                self.assertTrue(room.clue.strip())
+
+    def test_R5_every_room_has_a_different_clue(self):
+        """R5 (AC-R5.2): no two rooms share a clue."""
+        clues = [room.clue for room in self.rooms.values()]
+        self.assertEqual(len(clues), len(set(clues)))
+
+    def test_R5_clue_is_not_just_the_room_description(self):
+        """R5 (AC-R5.2): the scanner tells the player something new."""
+        for room in self.rooms.values():
+            with self.subTest(room=room.id):
+                self.assertNotEqual(room.clue, room.description)
+                self.assertNotIn(room.clue, room.description)
+
+    def test_R5_clues_are_short_plain_ascii(self):
+        """R5 (AC-R5.2, AC-R5.6): clues are one or two sentences of plain ASCII."""
+        for room in self.rooms.values():
+            with self.subTest(room=room.id):
+                self.assertTrue(room.clue.isascii())
+                sentences = [s for s in room.clue.split(". ") if s.strip()]
+                self.assertTrue(1 <= len(sentences) <= 2, room.clue)
 
 
 if __name__ == "__main__":
