@@ -1,6 +1,6 @@
 """Game rule tests for signal_lost.game.
 
-Every test name starts with the requirement it checks (R1-R7), and
+Every test name starts with the requirement it checks (R1-R9), and
 its docstring names the acceptance criterion from spec.md Section 6.
 Each test builds a fresh Game, so no state is shared between tests.
 """
@@ -9,7 +9,11 @@ import unittest
 from collections import deque
 
 from signal_lost.game import (
+    HAZARD_DAMAGE,
+    MEDKIT,
+    MEDKIT_HEALING,
     OXYGEN_PER_MOVE,
+    STARTING_HEALTH,
     STARTING_OXYGEN,
     Game,
     Outcome,
@@ -720,6 +724,327 @@ class InventoryTests(unittest.TestCase):
                 locations = all_item_locations(game)
                 self.assertEqual(len(locations), 4)
                 self.assertEqual(set(locations), ALL_ITEMS)
+
+
+# ----- Round 4: health, hazards, and the medkit (R8, R9) -------------------
+
+# n, e, s, e reaches the Reactor Core; each "w, e" after that re-enters it.
+TO_REACTOR = ["north", "east", "south", "east"]
+REACTOR_DEATH = TO_REACTOR + ["west", "east"] * 4   # 5 entries, 12 moves
+TO_MEDKIT = ["north"]
+
+
+def use(name):
+    return Command("use", name)
+
+
+def health_snapshot(game):
+    """Everything a free command must leave alone, now including health."""
+    return snapshot(game) + (game.health, tuple(game.inventory),
+                             {r: tuple(i) for r, i in game.room_items.items()})
+
+
+class HealthStartTests(unittest.TestCase):
+    def test_R8_new_game_starts_with_10_health(self):
+        """R8 (AC-R8.1): a new game has exactly 10 health."""
+        self.assertEqual(STARTING_HEALTH, 10)
+        self.assertEqual(Game().health, 10)
+
+    def test_R8_results_report_current_health(self):
+        """R8 (AC-R8.2): every TurnResult carries the health to display."""
+        game = Game()
+        self.assertEqual(game.handle(Command("look")).health, 10)
+        self.assertEqual(game.handle(move("north")).health, 10)
+
+    def test_R8_constants_match_the_requirements(self):
+        """R8 (AC-R8.4) and R9 (AC-R9.2): 2 damage per hazard, 4 healing per medkit."""
+        self.assertEqual(HAZARD_DAMAGE, 2)
+        self.assertEqual(MEDKIT_HEALING, 4)
+        self.assertEqual(MEDKIT, "medkit")
+
+
+class HazardDamageTests(unittest.TestCase):
+    def test_R8_entering_the_reactor_core_costs_2_health(self):
+        """R8 (AC-R8.4): moving into the Reactor Core lowers health by 2."""
+        game = Game()
+        result = play(game, TO_REACTOR)[-1]
+        self.assertEqual(result.room.id, "reactor_core")
+        self.assertEqual(result.outcome, Outcome.MOVED)
+        self.assertEqual(game.health, 8)
+        self.assertEqual(result.health, 8)
+        self.assertEqual(result.damage, 2)
+
+    def test_R8_entering_the_cargo_hold_costs_2_health(self):
+        """R8 (AC-R8.4): moving into the Cargo Hold lowers health by 2."""
+        game = Game()
+        result = play(game, ["north", "east", "south", "south"])[-1]
+        self.assertEqual(result.room.id, "cargo_hold")
+        self.assertEqual(game.health, 8)
+        self.assertEqual(result.damage, 2)
+
+    def test_R8_going_back_into_a_hazard_hurts_again(self):
+        """R8 (AC-R8.4): every entry costs 2, not just the first."""
+        game = Game()
+        play(game, TO_REACTOR + ["west", "east", "west", "east"])
+        self.assertEqual(game.health, 4)
+
+    def test_R8_a_hazard_move_still_costs_exactly_1_oxygen(self):
+        """R8 (AC-R8.5): hazard rooms cost the normal 1 oxygen."""
+        game = Game()
+        play(game, TO_REACTOR[:-1])
+        before = game.oxygen
+        result = game.handle(move("east"))
+        self.assertEqual(game.oxygen, before - 1)
+        self.assertEqual(result.oxygen_used, 1)
+
+    def test_R8_safe_rooms_do_not_change_health(self):
+        """R8 (AC-R8.5): moving into any non-hazard room leaves health alone."""
+        game = Game()
+        results = play(game, ["north", "east", "north", "east", "south", "west", "south"])
+        for result in results:
+            with self.subTest(room=result.room.id):
+                self.assertEqual(result.health, 10)
+                self.assertEqual(result.damage, 0)
+
+    def test_R8_blocked_moves_and_commands_in_a_hazard_room_are_free(self):
+        """R8 (AC-R8.5): look, scan, map, items, help, and bumping walls cost no health."""
+        game = Game()
+        play(game, TO_REACTOR)
+        commands = [move("east"), move("north"), Command("look"), Command("scan"),
+                    Command("map"), Command("help"), INVENTORY, take("banana"),
+                    drop("banana"), use("banana"), use(None), Command("empty"),
+                    Command("unknown", "fly")]
+        for command in commands:
+            with self.subTest(command=command):
+                result = game.handle(command)
+                self.assertEqual(game.health, 8)
+                self.assertEqual(result.damage, 0)
+
+    def test_R8_health_reaching_zero_ends_the_game(self):
+        """R8 (AC-R8.6): a hazard that brings health to 0 is DIED and LOST."""
+        game = Game()
+        play(game, TO_REACTOR[:-1])
+        game.health = 2
+        result = game.handle(move("east"))
+        self.assertEqual(result.outcome, Outcome.DIED)
+        self.assertEqual(game.status, Status.LOST)
+        self.assertEqual(game.health, 0)
+        self.assertGreater(game.oxygen, 0)
+
+    def test_R8_health_never_goes_below_zero(self):
+        """R8 (AC-R8.6): with 1 health, a hazard leaves 0, not -1."""
+        game = Game()
+        play(game, TO_REACTOR[:-1])
+        game.health = 1
+        result = game.handle(move("east"))
+        self.assertEqual(game.health, 0)
+        self.assertEqual(result.health, 0)
+        self.assertEqual(result.outcome, Outcome.DIED)
+
+    def test_R8_no_commands_are_processed_after_dying(self):
+        """R8 (AC-R8.6): once dead, handle() changes nothing."""
+        game = Game()
+        play(game, REACTOR_DEATH)
+        before = health_snapshot(game)
+        for command in (move("west"), Command("look"), use(MEDKIT), take("x")):
+            with self.subTest(command=command):
+                self.assertEqual(game.handle(command).outcome, Outcome.GAME_OVER)
+                self.assertEqual(health_snapshot(game), before)
+
+    def test_R8_health_and_oxygen_both_reaching_zero_is_the_health_ending(self):
+        """R8 (AC-R8.7): five reactor entries end on move 12 with both at 0 -> DIED."""
+        game = Game()
+        results = play(game, REACTOR_DEATH)
+        self.assertEqual(game.oxygen, 0)
+        self.assertEqual(game.health, 0)
+        self.assertEqual(results[-1].outcome, Outcome.DIED)
+        self.assertEqual(game.status, Status.LOST)
+        self.assertTrue(all(r.outcome is Outcome.MOVED for r in results[:-1]))
+
+    def test_R8_four_hazard_entries_still_leave_the_player_alive(self):
+        """R8 (AC-R8.6): health 2 is still alive and playing."""
+        game = Game()
+        results = play(game, TO_REACTOR + ["west", "east"] * 3)
+        self.assertEqual(game.health, 2)
+        self.assertEqual(results[-1].outcome, Outcome.MOVED)
+        self.assertEqual(game.status, Status.PLAYING)
+
+    def test_R8_shortest_routes_win_with_8_health_and_6_oxygen(self):
+        """R8 (AC-R8.8): both 6-move routes escape without healing."""
+        for route in (SHORTEST_ROUTE, REACTOR_ROUTE):
+            with self.subTest(route=route):
+                game = Game()
+                result = play(game, route)[-1]
+                self.assertEqual(result.outcome, Outcome.WON)
+                self.assertEqual(game.health, 8)
+                self.assertEqual(game.oxygen, 6)
+
+    def test_R8_a_ten_move_route_through_both_hazards_still_wins(self):
+        """R8 (AC-R8.8): reactor then cargo then reactor (3 hazards) still wins."""
+        game = Game()
+        route = TO_REACTOR + ["south", "west", "east", "north", "south", "east"]
+        result = play(game, route)[-1]
+        self.assertEqual(result.outcome, Outcome.WON)
+        self.assertEqual(game.health, 4)
+        self.assertEqual(game.oxygen, 2)
+
+    def test_R8_earlier_boundary_rules_are_unchanged(self):
+        """R8 (AC-R8.5) with R3 (AC-R3.5, AC-R3.6): oxygen losses still say LOST."""
+        for route in (TWELVE_MOVE_POD, WANDER_LOSS):
+            with self.subTest(route=route):
+                result = play(Game(), route)[-1]
+                self.assertEqual(result.outcome, Outcome.LOST)
+
+
+class UseMedkitTests(unittest.TestCase):
+    def setUp(self):
+        self.game = Game()
+        play(self.game, TO_MEDKIT)
+        self.game.handle(take(MEDKIT))
+
+    def hurt(self, times):
+        """Walk from the Medical Bay into the Reactor Core ``times`` times."""
+        play(self.game, ["east", "south", "east"] + ["west", "east"] * (times - 1))
+
+    def test_R9_medkit_restores_4_health(self):
+        """R9 (AC-R9.2): at 6 health the medkit brings the player to 10."""
+        self.hurt(2)
+        self.assertEqual(self.game.health, 6)
+        result = self.game.handle(use(MEDKIT))
+        self.assertEqual(result.outcome, Outcome.HEALED)
+        self.assertEqual(self.game.health, 10)
+        self.assertEqual(result.health, 10)
+        self.assertEqual(result.healed, 4)
+        self.assertEqual(result.item, MEDKIT)
+
+    def test_R9_healing_never_goes_above_10(self):
+        """R9 (AC-R9.2): at 8 health the medkit restores only 2."""
+        self.hurt(1)
+        result = self.game.handle(use(MEDKIT))
+        self.assertEqual(self.game.health, 10)
+        self.assertEqual(result.healed, 2)
+
+    def test_R9_low_health_heals_the_full_4(self):
+        """R9 (AC-R9.2): at 2 health the medkit brings the player to 6."""
+        self.hurt(4)
+        self.game.handle(use(MEDKIT))
+        self.assertEqual(self.game.health, 6)
+
+    def test_R9_a_used_medkit_leaves_the_inventory(self):
+        """R9 (AC-R9.3): after a successful use the medkit is gone."""
+        self.hurt(1)
+        result = self.game.handle(use(MEDKIT))
+        self.assertNotIn(MEDKIT, self.game.inventory)
+        self.assertNotIn(MEDKIT, result.inventory)
+
+    def test_R9_a_medkit_cannot_be_used_twice(self):
+        """R9 (AC-R9.3, AC-R9.4): a second use says it is not carried."""
+        self.hurt(2)
+        self.game.handle(use(MEDKIT))
+        play(self.game, ["west", "east"])  # back into the reactor: 10 -> 8
+        result = self.game.handle(use(MEDKIT))
+        self.assertEqual(result.outcome, Outcome.NOT_CARRIED)
+        self.assertEqual(self.game.health, 8)
+
+    def test_R9_medkit_not_yet_taken_cannot_be_used(self):
+        """R9 (AC-R9.4): the medkit lying in the room must be taken first."""
+        game = Game()
+        play(game, TO_MEDKIT)
+        game.health = 6
+        before = health_snapshot(game)
+        result = game.handle(use(MEDKIT))
+        self.assertEqual(result.outcome, Outcome.NOT_CARRIED)
+        self.assertEqual(result.item, MEDKIT)
+        self.assertEqual(health_snapshot(game), before)
+
+    def test_R9_dropped_medkit_cannot_be_used(self):
+        """R9 (AC-R9.4): a medkit that was dropped is not carried."""
+        self.hurt(1)
+        self.game.handle(drop(MEDKIT))
+        before = health_snapshot(self.game)
+        self.assertEqual(self.game.handle(use(MEDKIT)).outcome, Outcome.NOT_CARRIED)
+        self.assertEqual(health_snapshot(self.game), before)
+
+    def test_R9_medkit_is_kept_at_full_health(self):
+        """R9 (AC-R9.5): at 10 health the medkit isn't wasted."""
+        before = health_snapshot(self.game)
+        result = self.game.handle(use(MEDKIT))
+        self.assertEqual(result.outcome, Outcome.FULL_HEALTH)
+        self.assertEqual(result.healed, 0)
+        self.assertIn(MEDKIT, self.game.inventory)
+        self.assertEqual(health_snapshot(self.game), before)
+
+    def test_R9_kept_medkit_still_works_later(self):
+        """R9 (AC-R9.5): after a full-health try, the medkit heals once hurt."""
+        self.game.handle(use(MEDKIT))
+        self.hurt(1)
+        self.assertEqual(self.game.handle(use(MEDKIT)).outcome, Outcome.HEALED)
+        self.assertEqual(self.game.health, 10)
+
+    def test_R9_using_the_medkit_is_free(self):
+        """R9 (AC-R9.6): no oxygen, room, status, or visited changes."""
+        self.hurt(1)
+        before = snapshot(self.game)
+        result = self.game.handle(use(MEDKIT))
+        self.assertEqual(snapshot(self.game), before)
+        self.assertEqual(result.oxygen_used, 0)
+        self.assertEqual(result.damage, 0)
+
+    def test_R9_medkit_can_be_taken_and_dropped_like_before(self):
+        """R9 (AC-R9.7): the unused medkit moves like any other item."""
+        self.assertEqual(self.game.handle(drop(MEDKIT)).outcome, Outcome.DROPPED)
+        self.assertIn(MEDKIT, self.game.items_here)
+        self.assertEqual(self.game.handle(take(MEDKIT)).outcome, Outcome.TAKEN)
+        self.assertEqual(self.game.inventory, [MEDKIT])
+
+
+class UseOtherItemsTests(unittest.TestCase):
+    def test_R9_other_carried_items_cannot_be_used(self):
+        """R9 (AC-R9.7): 'use flashlight' says it can't be used and changes nothing."""
+        game = Game()
+        game.handle(take("flashlight"))
+        before = health_snapshot(game)
+        result = game.handle(use("flashlight"))
+        self.assertEqual(result.outcome, Outcome.CANT_USE)
+        self.assertEqual(result.item, "flashlight")
+        self.assertEqual(health_snapshot(game), before)
+        self.assertEqual(game.inventory, ["flashlight"])
+
+    def test_R9_items_not_carried_cannot_be_used(self):
+        """R9 (AC-R9.4, AC-R9.7): not-carried check comes first, for any name."""
+        game = Game()
+        for name in ("flashlight", "keycard", "banana", "med"):
+            with self.subTest(item=name):
+                before = health_snapshot(game)
+                result = game.handle(use(name))
+                self.assertEqual(result.outcome, Outcome.NOT_CARRIED)
+                self.assertEqual(result.item, name)
+                self.assertEqual(health_snapshot(game), before)
+
+    def test_R9_use_with_no_name_is_invalid(self):
+        """R9 (AC-R9.1): bare 'use' is INVALID and changes nothing."""
+        game = Game()
+        before = health_snapshot(game)
+        self.assertEqual(game.handle(use(None)).outcome, Outcome.INVALID)
+        self.assertEqual(health_snapshot(game), before)
+
+    def test_R9_items_are_conserved_until_the_medkit_is_used(self):
+        """R9 (AC-R9.7): four items before the medkit is used, three after."""
+        game = Game()
+        script = [take("flashlight"), move("north"), take("medkit"), use("medkit"),
+                  drop("flashlight"), move("east"), move("north"), take("keycard"),
+                  use("keycard"), move("south"), move("south"), take("repair kit"),
+                  move("east"), drop("keycard")]
+        for step, command in enumerate(script):
+            game.handle(command)
+            with self.subTest(step=step, command=command):
+                locations = all_item_locations(game)
+                self.assertEqual(len(locations), 4)
+                self.assertEqual(set(locations), ALL_ITEMS)
+        game.handle(use("medkit"))
+        locations = all_item_locations(game)
+        self.assertEqual(len(locations), 3)
+        self.assertEqual(set(locations), ALL_ITEMS - {MEDKIT})
 
 
 if __name__ == "__main__":

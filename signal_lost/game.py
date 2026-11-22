@@ -12,6 +12,10 @@ from .world import DIRECTIONS, ESCAPE_ROOM, START_ROOM, Room, build_ship
 
 STARTING_OXYGEN = 12
 OXYGEN_PER_MOVE = 1
+STARTING_HEALTH = 10   # also the most health the player can have
+HAZARD_DAMAGE = 2      # health lost on every entry into a hazard room
+MEDKIT = "medkit"
+MEDKIT_HEALING = 4
 
 
 class Status(Enum):
@@ -37,8 +41,12 @@ class Outcome(Enum):
     DROPPED = "dropped"      # left a carried item in the current room
     NOT_CARRIED = "not_carried"  # tried to drop an item not being carried
     INVENTORY = "inventory"  # asked what the player is carrying
+    HEALED = "healed"        # used the medkit and got health back
+    FULL_HEALTH = "full_health"  # tried the medkit at full health; kept it
+    CANT_USE = "cant_use"    # used a carried item that does nothing
     WON = "won"              # moved into the escape pod with oxygen left
     LOST = "lost"            # moved and oxygen hit zero
+    DIED = "died"            # moved into a hazard and health hit zero
     QUIT = "quit"            # player gave up
     GAME_OVER = "game_over"  # command ignored because the game already ended
 
@@ -52,21 +60,27 @@ class TurnResult:
     visited: frozenset = frozenset()
     items: tuple = ()        # items in the current room now
     inventory: tuple = ()    # items carried, in pickup order
-    item: Optional[str] = None  # item named by a take or drop
+    item: Optional[str] = None  # item named by a take, drop, or use
+    health: int = STARTING_HEALTH
+    damage: int = 0          # health lost to a hazard this turn
+    healed: int = 0          # health restored by a medkit this turn
 
 
 class Game:
-    """Holds the player's current room, oxygen, game status, the rooms
-    visited so far, the items in each room, and the player's inventory."""
+    """Holds the player's current room, oxygen, health, game status, the
+    rooms visited so far, the items in each room, and the player's
+    inventory."""
 
     def __init__(self, rooms=None):
         self.rooms = rooms if rooms is not None else build_ship()
         self.room_id = START_ROOM
         self.oxygen = STARTING_OXYGEN
+        self.health = STARTING_HEALTH
         self.status = Status.PLAYING
         self.visited = {START_ROOM}
         # Every item is in exactly one place: one room's list or the
-        # inventory (spec.md Section 3.9).
+        # inventory (spec.md Section 3.9). A used medkit is in neither
+        # (Section 3.10).
         self.room_items = {room_id: list(room.items)
                            for room_id, room in self.rooms.items()}
         self.inventory = []
@@ -80,6 +94,7 @@ class Game:
             "take": self._take,
             "drop": self._drop,
             "inventory": self._inventory,
+            "use": self._use,
             "empty": self._empty,
             "unknown": self._invalid,
         }
@@ -114,12 +129,20 @@ class Game:
         if destination is None:
             return self._result(Outcome.BLOCKED)
 
-        # Turn resolution order from spec.md Section 4.2.
+        # Turn resolution order from spec.md Section 4.2 (with the Round 4
+        # health step from Section 3.10).
         self.room_id = destination
         self.visited.add(destination)
         self.oxygen = max(0, self.oxygen - OXYGEN_PER_MOVE)
+        damage = HAZARD_DAMAGE if self.room.hazard else 0
+        self.health = max(0, self.health - damage)
 
-        if self.room_id == ESCAPE_ROOM and self.oxygen > 0:
+        # Health is checked first: the hazard hits on arrival, so dying
+        # wins over running out of oxygen on the same move.
+        if self.health == 0:
+            self.status = Status.LOST
+            outcome = Outcome.DIED
+        elif self.room_id == ESCAPE_ROOM and self.oxygen > 0:
             self.status = Status.WON
             outcome = Outcome.WON
         elif self.oxygen == 0:
@@ -127,7 +150,8 @@ class Game:
             outcome = Outcome.LOST
         else:
             outcome = Outcome.MOVED
-        return self._result(outcome, oxygen_used=OXYGEN_PER_MOVE)
+        return self._result(outcome, oxygen_used=OXYGEN_PER_MOVE,
+                            damage=damage)
 
     def _look(self, command):
         return self._result(Outcome.LOOKED)
@@ -165,6 +189,21 @@ class Game:
     def _inventory(self, command):
         return self._result(Outcome.INVENTORY)
 
+    def _use(self, command):
+        item = command.arg
+        if item is None:
+            return self._result(Outcome.INVALID)
+        if item not in self.inventory:
+            return self._result(Outcome.NOT_CARRIED, item=item)
+        if item != MEDKIT:
+            return self._result(Outcome.CANT_USE, item=item)
+        if self.health >= STARTING_HEALTH:
+            return self._result(Outcome.FULL_HEALTH, item=item)
+        healed = min(MEDKIT_HEALING, STARTING_HEALTH - self.health)
+        self.health += healed
+        self.inventory.remove(item)  # a used medkit is gone for good
+        return self._result(Outcome.HEALED, item=item, healed=healed)
+
     def _quit(self, command):
         self.status = Status.QUIT
         return self._result(Outcome.QUIT)
@@ -175,7 +214,8 @@ class Game:
     def _invalid(self, command):
         return self._result(Outcome.INVALID)
 
-    def _result(self, outcome, oxygen_used=0, item=None):
+    def _result(self, outcome, oxygen_used=0, item=None, damage=0, healed=0):
         return TurnResult(outcome, self.room, self.oxygen, oxygen_used,
                           frozenset(self.visited), self.items_here,
-                          tuple(self.inventory), item)
+                          tuple(self.inventory), item, self.health,
+                          damage, healed)
