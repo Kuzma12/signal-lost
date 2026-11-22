@@ -1,6 +1,6 @@
 """Command parsing tests for signal_lost.parser.
 
-Every test name starts with the requirement it checks (R1-R10), and
+Every test name starts with the requirement it checks (R1-R12), and
 its docstring names the acceptance criterion from spec.md Section 6.
 """
 
@@ -213,6 +213,31 @@ class ItemParsingTests(unittest.TestCase):
         for text in ("use keycard", "  USE   KeyCard ", "Use KEYCARD"):
             with self.subTest(text=text):
                 self.assertEqual(parse(text), Command("use", "keycard"))
+
+
+class SaveLoadParsingTests(unittest.TestCase):
+    def test_R11_save_parses_to_the_save_command(self):
+        """R11 (AC-R11.1): 'save' ignores case and extra spaces."""
+        for text in ("save", "SAVE", "  Save  "):
+            with self.subTest(text=text):
+                self.assertEqual(parse(text), Command("save"))
+
+    def test_R12_load_parses_to_the_load_command(self):
+        """R12 (AC-R12.1): 'load' ignores case and extra spaces."""
+        for text in ("load", "LOAD", "  Load  "):
+            with self.subTest(text=text):
+                self.assertEqual(parse(text), Command("load"))
+
+    def test_R11_R12_save_and_load_with_more_words_are_unknown(self):
+        """R11 (AC-R11.1) and R12 (AC-R12.1): there is one slot, so no names."""
+        for text in ("save game", "load 2", "SAVE  my game", "load save"):
+            with self.subTest(text=text):
+                self.assertEqual(parse(text), Command("unknown", text.strip()))
+
+    def test_R11_R12_save_and_load_keep_one_letter_aliases_unchanged(self):
+        """R11 (AC-R11.1) and R12 (AC-R12.1): 's' is still south and 'l' still look."""
+        self.assertEqual(parse("s"), Command("move", "south"))
+        self.assertEqual(parse("l"), Command("look"))
 
 
 if __name__ == "__main__":

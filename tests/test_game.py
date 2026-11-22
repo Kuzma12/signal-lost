@@ -1,12 +1,15 @@
 """Game rule tests for signal_lost.game.
 
-Every test name starts with the requirement it checks (R1-R10), and
+Every test name starts with the requirement it checks (R1-R12), and
 its docstring names the acceptance criterion from spec.md Section 6.
 Each test builds a fresh Game, so no state is shared between tests.
 """
 
+import json
+import tempfile
 import unittest
 from collections import deque
+from pathlib import Path
 
 from signal_lost.game import (
     HAZARD_DAMAGE,
@@ -22,11 +25,13 @@ from signal_lost.game import (
     TurnResult,
 )
 from signal_lost.parser import Command
+from signal_lost.savefile import SAVE_FILE
 from signal_lost.world import (
     DIRECTIONS,
     ESCAPE_ROOM,
     KEYCARD_READER,
     START_ROOM,
+    STARTING_ITEMS,
     build_ship,
 )
 
@@ -1360,6 +1365,483 @@ class RevisedEscapeTests(unittest.TestCase):
                      if dest != ESCAPE_ROOM or len(path) == length - 1]
         return [path for path, _ in paths]
 
+
+# ----- Round 6: saving and loading (R11, R12) ------------------------------
+
+SAVE = Command("save")
+LOAD = Command("load")
+SAVE_KEYS = {"version", "room", "oxygen", "health", "status", "visited",
+             "room_items", "inventory", "pod_locked"}
+# Takes the flashlight, takes the medkit and leaves the flashlight in the
+# Medical Bay, picks up the keycard, and unlocks the pod: every kind of
+# saved state differs from a new game's.
+BUSY_SCRIPT = ["take flashlight", "north", "take medkit", "drop flashlight",
+               "east", "north", "take keycard", "south", "south", "south",
+               "east", "use keycard"]
+BUSY_SAVE = {
+    "version": 1,
+    "room": "airlock_junction",
+    "oxygen": 5,
+    "health": 8,
+    "status": "playing",
+    "visited": ["airlock_junction", "bridge", "cargo_hold",
+                "central_corridor", "cryo_bay", "engineering", "medical_bay"],
+    "room_items": {
+        "airlock_junction": [], "bridge": [], "cargo_hold": [],
+        "central_corridor": [], "comms_array": [], "cryo_bay": [],
+        "engineering": ["repair kit"], "escape_pod": [],
+        "medical_bay": ["flashlight"], "mess_hall": [], "reactor_core": [],
+    },
+    "inventory": ["medkit", "keycard"],
+    "pod_locked": False,
+}
+
+
+def full_state(game):
+    """Every piece of live game state that a save must keep."""
+    return (game.room_id, game.oxygen, game.health, game.status,
+            frozenset(game.visited),
+            {room: list(items) for room, items in game.room_items.items()},
+            list(game.inventory), game.pod_locked)
+
+
+class SaveLoadTestCase(unittest.TestCase):
+    """Gives each test a temporary folder and a save path inside it."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = Path(folder.name)
+        self.path = self.folder / SAVE_FILE
+
+    def new_game(self, steps=()):
+        game = Game(save_path=self.path)
+        run_script(game, steps)
+        return game
+
+    def saved(self):
+        return json.loads(self.path.read_text(encoding="utf-8"))
+
+
+class SaveCommandTests(SaveLoadTestCase):
+    def test_R11_default_save_path_is_the_save_file_in_the_current_folder(self):
+        """R11 (AC-R11.2): a Game saves to signal_lost_save.json by default."""
+        self.assertEqual(Game().save_path, SAVE_FILE)
+
+    def test_R11_save_returns_saved_and_writes_the_file(self):
+        """R11 (AC-R11.2, AC-R11.4): 'save' creates the JSON file."""
+        game = self.new_game()
+        result = game.handle(SAVE)
+        self.assertEqual(result.outcome, Outcome.SAVED)
+        self.assertTrue(self.path.is_file())
+        self.assertEqual(set(self.saved()), SAVE_KEYS)
+
+    def test_R11_save_holds_every_field_with_the_current_values(self):
+        """R11 (AC-R11.2): room, oxygen, health, status, visited, items,
+        inventory, and the pod lock are all saved."""
+        game = self.new_game(BUSY_SCRIPT)
+        game.handle(SAVE)
+        self.assertEqual(self.saved(), BUSY_SAVE)
+
+    def test_R11_new_game_save_matches_the_starting_state(self):
+        """R11 (AC-R11.2): a save at the start records the starting state."""
+        self.new_game().handle(SAVE)
+        data = self.saved()
+        self.assertEqual(data["room"], START_ROOM)
+        self.assertEqual(data["oxygen"], STARTING_OXYGEN)
+        self.assertEqual(data["health"], STARTING_HEALTH)
+        self.assertEqual(data["visited"], [START_ROOM])
+        self.assertEqual(data["inventory"], [])
+        self.assertIs(data["pod_locked"], True)
+        expected = {room: list(STARTING_ITEMS.get(room, ())) for room in build_ship()}
+        self.assertEqual(data["room_items"], expected)
+
+    def test_R11_save_data_matches_the_file(self):
+        """R11 (AC-R11.2): Game.save_data() is exactly what is written."""
+        game = self.new_game(BUSY_SCRIPT)
+        game.handle(SAVE)
+        self.assertEqual(game.save_data(), self.saved())
+
+    def test_R11_visited_rooms_are_saved_in_sorted_order(self):
+        """R11 (AC-R11.2): the same state always gives the same file."""
+        game = self.new_game(["north", "east", "south", "east"])
+        game.handle(SAVE)
+        visited = self.saved()["visited"]
+        self.assertEqual(visited, sorted(visited))
+        self.assertEqual(set(visited), game.visited)
+
+    def test_R11_saving_uses_no_oxygen_or_health_and_changes_nothing(self):
+        """R11 (AC-R11.3): save is free and leaves the game as it was."""
+        game = self.new_game(BUSY_SCRIPT)
+        before = lock_snapshot(game)
+        result = game.handle(SAVE)
+        self.assertEqual(lock_snapshot(game), before)
+        self.assertEqual((result.oxygen_used, result.damage, result.healed), (0, 0, 0))
+        self.assertEqual(result.room.id, game.room_id)
+
+    def test_R11_saving_again_replaces_the_previous_save(self):
+        """R11 (AC-R11.5): one slot; the second save overwrites the first."""
+        game = self.new_game()
+        game.handle(SAVE)
+        run_script(game, ["north", "take medkit"])
+        game.handle(SAVE)
+        data = self.saved()
+        self.assertEqual(data["room"], "medical_bay")
+        self.assertEqual(data["oxygen"], 11)
+        self.assertEqual(data["inventory"], ["medkit"])
+
+    def test_R11_a_used_medkit_is_missing_from_the_save(self):
+        """R11 (AC-R11.2): a used medkit is in no room and not carried."""
+        game = self.new_game(["north", "take medkit", "east", "south", "east",
+                              "use medkit"])
+        game.handle(SAVE)
+        data = self.saved()
+        self.assertNotIn(MEDKIT, data["inventory"])
+        self.assertFalse(any(MEDKIT in items for items in data["room_items"].values()))
+        self.assertEqual(data["health"], STARTING_HEALTH)
+
+    def test_R11_unwritable_path_gives_save_failed_and_changes_nothing(self):
+        """R11 (AC-R11.6): a save that can't be written is reported, not a crash."""
+        game = Game(save_path=self.folder / "missing" / SAVE_FILE)
+        run_script(game, BUSY_SCRIPT)
+        before = lock_snapshot(game)
+        result = game.handle(SAVE)
+        self.assertEqual(result.outcome, Outcome.SAVE_FAILED)
+        self.assertEqual(lock_snapshot(game), before)
+
+    def test_R11_failed_save_keeps_the_earlier_save_file(self):
+        """R11 (AC-R11.6): the earlier save survives a failed save."""
+        game = self.new_game()
+        game.handle(SAVE)
+        before = self.path.read_bytes()
+        Path(str(self.path) + ".tmp").mkdir()   # the temporary file can't be made
+        game.handle(Command("move", "north"))
+        result = game.handle(SAVE)
+        self.assertEqual(result.outcome, Outcome.SAVE_FAILED)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_R11_save_after_the_game_ends_writes_nothing(self):
+        """R11 (spec 3.12, AC-R3.7): a finished game ignores 'save'."""
+        game = self.new_game(KEYCARD_ROUTE)
+        self.assertEqual(game.status, Status.WON)
+        self.assertEqual(game.handle(SAVE).outcome, Outcome.GAME_OVER)
+        self.assertFalse(self.path.exists())
+
+
+class LoadCommandTests(SaveLoadTestCase):
+    def test_R12_load_with_no_save_gives_no_save_and_changes_nothing(self):
+        """R12 (AC-R12.6): a missing save is reported, not a crash."""
+        game = self.new_game(BUSY_SCRIPT)
+        before = lock_snapshot(game)
+        result = game.handle(LOAD)
+        self.assertEqual(result.outcome, Outcome.NO_SAVE)
+        self.assertEqual(lock_snapshot(game), before)
+        self.assertFalse(self.path.exists())
+
+    def test_R12_load_in_a_new_game_restores_every_field(self):
+        """R12 (AC-R12.2): location, oxygen, health, inventory, room items,
+        visited rooms, and the pod lock all come back."""
+        original = self.new_game(BUSY_SCRIPT)
+        original.handle(SAVE)
+        game = self.new_game()
+        result = game.handle(LOAD)
+        self.assertEqual(result.outcome, Outcome.LOADED)
+        self.assertEqual(full_state(game), full_state(original))
+        self.assertEqual(game.status, Status.PLAYING)
+
+    def test_R12_load_goes_back_to_the_saved_point_in_the_same_game(self):
+        """R12 (AC-R12.2): loading undoes everything since the save."""
+        game = self.new_game(KEYCARD_ROUTE[:5])          # holding the keycard
+        game.handle(SAVE)
+        at_save = full_state(game)
+        run_script(game, ["drop keycard", "south", "south", "east", "south"])
+        self.assertNotEqual(full_state(game), at_save)
+        game.handle(LOAD)
+        self.assertEqual(full_state(game), at_save)
+
+    def test_R12_load_result_shows_the_restored_room_and_status(self):
+        """R12 (AC-R12.4): the LOADED result carries the room, items, and gauges."""
+        self.new_game(BUSY_SCRIPT[:4]).handle(SAVE)      # Medical Bay
+        result = self.new_game().handle(LOAD)
+        self.assertEqual(result.room.id, "medical_bay")
+        self.assertEqual(result.oxygen, 11)
+        self.assertEqual(result.health, STARTING_HEALTH)
+        self.assertEqual(result.items, ("flashlight",))
+        self.assertEqual(result.inventory, ("medkit",))
+        self.assertEqual(result.visited, frozenset({"cryo_bay", "medical_bay"}))
+
+    def test_R12_load_itself_uses_no_oxygen_or_health(self):
+        """R12 (AC-R12.5): oxygen and health become exactly the saved values."""
+        self.new_game(["north", "east", "south", "east"]).handle(SAVE)   # Reactor
+        game = self.new_game()
+        result = game.handle(LOAD)
+        self.assertEqual((game.oxygen, game.health), (8, 8))
+        self.assertEqual((result.oxygen_used, result.damage, result.healed), (0, 0, 0))
+
+    def test_R12_load_restores_an_unlocked_pod_and_the_game_can_be_won(self):
+        """R12 (AC-R12.2, AC-R12.3): the unlocked door survives a save."""
+        self.new_game(KEYCARD_ROUTE[:-1]).handle(SAVE)   # unlocked, at the reader
+        game = self.new_game()
+        game.handle(LOAD)
+        self.assertFalse(game.pod_locked)
+        result = game.handle(move("east"))
+        self.assertEqual(result.outcome, Outcome.WON)
+        self.assertEqual((game.oxygen, game.health), (4, 8))
+
+    def test_R12_load_restores_a_locked_pod(self):
+        """R12 (AC-R12.2): a save made before unlocking keeps the door locked."""
+        self.new_game(TO_READER_WITH_KEYCARD).handle(SAVE)
+        game = self.new_game()
+        game.handle(LOAD)
+        self.assertTrue(game.pod_locked)
+        self.assertEqual(game.handle(move("east")).outcome, Outcome.LOCKED)
+        self.assertEqual(game.handle(use(KEYCARD)).outcome, Outcome.UNLOCKED)
+
+    def test_R12_loaded_game_plays_exactly_like_an_uninterrupted_game(self):
+        """R12 (AC-R12.3): saving at any step and loading in a new game gives
+        the same results for the rest of the game."""
+        # Every kind of command: items, a hazard, healing, the lock, a win.
+        script = ["take flashlight", "north", "take medkit", "east", "north",
+                  "take keycard", "drop flashlight", "south", "south", "east",
+                  "use medkit", "map", "south", "use keycard", "east"]
+        reference = self.new_game()
+        expected = run_script(reference, script)
+        # A finished game can't be saved, so the last split is before the
+        # winning move.
+        for split in range(len(script)):
+            with self.subTest(split=split):
+                self.new_game(script[:split]).handle(SAVE)
+                game = self.new_game()
+                game.handle(LOAD)
+                self.assertEqual(run_script(game, script[split:]), expected[split:])
+                self.assertEqual(full_state(game), full_state(reference))
+        self.assertEqual(reference.status, Status.WON)
+
+    def test_R12_load_does_not_change_the_save_file(self):
+        """R12 (AC-R12.5): the file is read, never rewritten or deleted."""
+        self.new_game(BUSY_SCRIPT).handle(SAVE)
+        before = self.path.read_bytes()
+        self.new_game().handle(LOAD)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_R12_the_same_save_can_be_loaded_more_than_once(self):
+        """R12 (AC-R12.5): changes after a load don't touch the save."""
+        game = self.new_game(["north"])
+        game.handle(SAVE)
+        game.handle(LOAD)
+        run_script(game, ["take medkit", "east"])
+        game.handle(LOAD)
+        self.assertEqual(game.room_id, "medical_bay")
+        self.assertEqual(game.room_items["medical_bay"], ["medkit"])
+        self.assertEqual(game.inventory, [])
+        self.assertEqual(game.oxygen, 11)
+
+    def test_R12_a_saved_used_medkit_stays_used(self):
+        """R12 (AC-R12.2, AC-R9.7): three items after loading a used medkit."""
+        self.new_game(["north", "take medkit", "east", "south", "east",
+                       "use medkit"]).handle(SAVE)
+        game = self.new_game()
+        game.handle(LOAD)
+        self.assertEqual(sorted(all_item_locations(game)),
+                         sorted(ALL_ITEMS - {MEDKIT}))
+
+    def test_R12_load_after_the_game_ends_is_ignored(self):
+        """R12 (spec 3.12, AC-R3.7): a finished game ignores 'load'."""
+        game = self.new_game()
+        game.handle(SAVE)
+        run_script(game, WANDER_LOSS)
+        self.assertEqual(game.status, Status.LOST)
+        self.assertEqual(game.handle(LOAD).outcome, Outcome.GAME_OVER)
+        self.assertEqual(game.status, Status.LOST)
+
+    def test_R12_a_valid_hand_written_save_loads(self):
+        """R12 (AC-R12.2): key order and spacing in the file don't matter."""
+        data = dict(reversed(list(BUSY_SAVE.items())))
+        self.path.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
+        game = self.new_game()
+        self.assertEqual(game.handle(LOAD).outcome, Outcome.LOADED)
+        self.assertEqual(game.save_data(), BUSY_SAVE)
+
+
+def _set(key, value):
+    def change(data):
+        data[key] = value
+    return change
+
+
+def _delete(key):
+    def change(data):
+        del data[key]
+    return change
+
+
+def _room_items(room, items):
+    def change(data):
+        data["room_items"][room] = items
+    return change
+
+
+def _move_item(item, room):
+    """Put a second copy of ``item`` in ``room``."""
+    def change(data):
+        data["room_items"][room].append(item)
+    return change
+
+
+def _remove_item(item):
+    def change(data):
+        for items in data["room_items"].values():
+            if item in items:
+                items.remove(item)
+        if item in data["inventory"]:
+            data["inventory"].remove(item)
+    return change
+
+
+def _drop_room(room):
+    def change(data):
+        del data["room_items"][room]
+    return change
+
+
+def _visited(rooms):
+    return _set("visited", rooms)
+
+
+# Each change turns BUSY_SAVE into a damaged save (spec 3.12 checks 2-10).
+DAMAGING_CHANGES = {
+    "missing key": _delete("inventory"),
+    "extra key": _set("cheats", True),
+    "version 2": _set("version", 2),
+    "version as text": _set("version", "1"),
+    "version true": _set("version", True),
+    "status won": _set("status", "won"),
+    "status lost": _set("status", "lost"),
+    "oxygen 0": _set("oxygen", 0),
+    "oxygen 13": _set("oxygen", 13),
+    "oxygen negative": _set("oxygen", -1),
+    "oxygen text": _set("oxygen", "5"),
+    "oxygen decimal": _set("oxygen", 5.0),
+    "oxygen true": _set("oxygen", True),
+    "oxygen null": _set("oxygen", None),
+    "health 0": _set("health", 0),
+    "health 11": _set("health", 11),
+    "health 99": _set("health", 99),
+    "health true": _set("health", True),
+    "unknown room": _set("room", "galley"),
+    "room is a number": _set("room", 3),
+    "standing in the pod": _set("room", ESCAPE_ROOM),
+    "visited not a list": _set("visited", "cryo_bay"),
+    "visited unknown room": _visited(BUSY_SAVE["visited"] + ["galley"]),
+    "visited repeats": _visited(BUSY_SAVE["visited"] + ["bridge"]),
+    "visited missing start": _visited([r for r in BUSY_SAVE["visited"] if r != START_ROOM]),
+    "visited missing current room": _visited(
+        [r for r in BUSY_SAVE["visited"] if r != "airlock_junction"]),
+    "visited includes the pod": _visited(BUSY_SAVE["visited"] + [ESCAPE_ROOM]),
+    "visited holds a number": _visited(BUSY_SAVE["visited"] + [7]),
+    "room items not an object": _set("room_items", []),
+    "room items missing a room": _drop_room("comms_array"),
+    "room items extra room": _room_items("galley", []),
+    "room items not a list": _room_items("bridge", "keycard"),
+    "room items holds a number": _room_items("bridge", [1]),
+    "item in the pod": lambda data: (_room_items("engineering", [])(data),
+                                     _room_items(ESCAPE_ROOM, ["repair kit"])(data)),
+    "inventory not a list": _set("inventory", "medkit"),
+    "inventory holds a number": _set("inventory", ["medkit", 2]),
+    "unknown item": _room_items("bridge", ["banana"]),
+    "second keycard": _move_item("keycard", "bridge"),
+    "keycard carried twice": _set("inventory", ["medkit", "keycard", "keycard"]),
+    "keycard missing": _remove_item("keycard"),
+    "flashlight missing": _remove_item("flashlight"),
+    "medkit and keycard missing": lambda data: (_remove_item("medkit")(data),
+                                                _remove_item("keycard")(data)),
+    "pod lock as text": _set("pod_locked", "no"),
+    "pod lock as number": _set("pod_locked", 0),
+    "pod lock null": _set("pod_locked", None),
+}
+
+
+class DamagedSaveTests(SaveLoadTestCase):
+    def setUp(self):
+        super().setUp()
+        # The current game is different from BUSY_SAVE, so a partial load
+        # would show up in the state.
+        self.game = self.new_game(["north", "take medkit", "east"])
+        self.before = lock_snapshot(self.game)
+
+    def assert_damaged(self):
+        result = self.game.handle(LOAD)
+        self.assertEqual(result.outcome, Outcome.DAMAGED_SAVE)
+        self.assertEqual(lock_snapshot(self.game), self.before)
+        self.assertEqual(result.room.id, self.game.room_id)
+
+    def test_R12_the_unchanged_busy_save_is_valid(self):
+        """R12 (AC-R12.2): the baseline for the damaged cases loads."""
+        self.path.write_text(json.dumps(BUSY_SAVE), encoding="utf-8")
+        self.assertEqual(self.game.handle(LOAD).outcome, Outcome.LOADED)
+
+    def test_R12_files_that_are_not_json_are_damaged(self):
+        """R12 (AC-R12.7): empty, garbage, cut-off, and non-UTF-8 files."""
+        cut_off = json.dumps(BUSY_SAVE).encode("utf-8")[:40]
+        for label, data in {"empty": b"", "garbage": b"\x00\x01ship",
+                            "cut off": cut_off, "not utf-8": b'{"room": "\xff"}'}.items():
+            with self.subTest(label):
+                self.path.write_bytes(data)
+                self.assert_damaged()
+
+    def test_R12_json_that_is_not_an_object_is_damaged(self):
+        """R12 (AC-R12.7, spec 3.12 check 1): the top level must be an object."""
+        for value in ([1, 2, 3], "save", 12, None, True):
+            with self.subTest(value=value):
+                self.path.write_text(json.dumps(value), encoding="utf-8")
+                self.assert_damaged()
+
+    def test_R12_a_folder_named_like_the_save_is_damaged(self):
+        """R12 (AC-R12.7): a save that exists but can't be read."""
+        self.path.mkdir()
+        self.assert_damaged()
+
+    def test_R12_every_broken_rule_makes_the_save_damaged(self):
+        """R12 (AC-R12.7, spec 3.12 checks 2-10): impossible or edited saves
+        never load."""
+        for label, change in DAMAGING_CHANGES.items():
+            with self.subTest(label):
+                data = json.loads(json.dumps(BUSY_SAVE))
+                change(data)
+                self.path.write_text(json.dumps(data), encoding="utf-8")
+                self.assert_damaged()
+
+    def test_R12_a_damaged_save_is_all_or_nothing(self):
+        """R12 (AC-R12.8): a file that fails only its last field still
+        changes nothing, not even the fields that looked fine."""
+        data = json.loads(json.dumps(BUSY_SAVE))
+        data["pod_locked"] = "unlocked"
+        self.path.write_text(json.dumps(data), encoding="utf-8")
+        self.assert_damaged()
+        self.assertEqual(self.game.room_id, "central_corridor")
+        self.assertEqual(self.game.inventory, ["medkit"])
+        self.assertTrue(self.game.pod_locked)
+
+    def test_R12_a_damaged_save_is_left_on_disk_unchanged(self):
+        """R12 (AC-R12.5, AC-R12.7): the damaged file is not deleted or fixed."""
+        self.path.write_bytes(b"{not json")
+        self.assert_damaged()
+        self.assertEqual(self.path.read_bytes(), b"{not json")
+
+    def test_R12_the_game_goes_on_normally_after_a_damaged_load(self):
+        """R12 (AC-R12.7): the player keeps playing from where they were."""
+        self.path.write_bytes(b"[]")
+        self.assert_damaged()
+        result = self.game.handle(move("north"))
+        self.assertEqual(result.outcome, Outcome.MOVED)
+        self.assertEqual(self.game.oxygen, 9)
+
+    def test_R12_saving_over_a_damaged_save_fixes_it(self):
+        """R11 (AC-R11.5) and R12: a new save replaces the damaged file."""
+        self.path.write_bytes(b"junk")
+        self.assertEqual(self.game.handle(SAVE).outcome, Outcome.SAVED)
+        self.assertEqual(self.game.handle(LOAD).outcome, Outcome.LOADED)
+        self.assertEqual(lock_snapshot(self.game), self.before)
 
 
 if __name__ == "__main__":

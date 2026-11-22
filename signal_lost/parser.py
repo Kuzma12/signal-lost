@@ -20,6 +20,9 @@ _COMMAND_ALIASES = {
     "map": "map", "m": "map",
     "scan": "scan", "sc": "scan",
     "inventory": "inventory", "inv": "inventory", "i": "inventory",
+    # No one-letter aliases: "s" is south and "l" is look (spec.md 3.12).
+    "save": "save",
+    "load": "load",
 }
 
 # Verbs followed by an item name (spec.md Sections 3.9 and 3.10).
@@ -34,7 +37,7 @@ class Command:
 
     ``kind`` is one of ``"move"``, ``"help"``, ``"look"``, ``"quit"``,
     ``"map"``, ``"scan"``, ``"take"``, ``"drop"``, ``"inventory"``,
-    ``"use"``, ``"empty"``, or ``"unknown"``. ``arg`` is the direction for a
+    ``"use"``, ``"save"``, ``"load"``, ``"empty"``, or ``"unknown"``. ``arg`` is the direction for a
     move, the item name (lower-case, single-spaced) for take/drop/use, the
     text the player typed (trimmed) for unknown input, and ``None``
     otherwise (including take/drop/use with no item name).
