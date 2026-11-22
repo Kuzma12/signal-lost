@@ -269,7 +269,7 @@ column + 1, south is row + 1, and so on). A test checks this.
 SHIP MAP  (* = you are here)
 
 [ Med Bay ]--[ Corridor]
-    |            |
+     |            |
 [ Cryo Bay]  [ Engines ]--[*Reactor ]
 
 You are in: Reactor Core
