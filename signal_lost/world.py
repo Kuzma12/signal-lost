@@ -14,6 +14,10 @@ DIRECTIONS = ("north", "east", "south", "west")
 START_ROOM = "cryo_bay"
 ESCAPE_ROOM = "escape_pod"
 
+# The room with the reader that unlocks the Escape Pod door (spec.md
+# Section 3.11). Its east exit is the only way into the pod.
+KEYCARD_READER = "airlock_junction"
+
 # Each room's (row, column) on the ship grid, used to draw the map
 # (spec.md Section 3.7). Every exit joins two neighboring cells.
 MAP_GRID = {

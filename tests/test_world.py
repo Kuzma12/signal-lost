@@ -1,6 +1,6 @@
 """Map integrity tests for signal_lost.world.
 
-Every test name starts with the requirement it checks (R1-R9), and
+Every test name starts with the requirement it checks (R1-R10), and
 its docstring names the acceptance criterion from spec.md Section 6.
 """
 
@@ -11,6 +11,7 @@ from signal_lost.world import (
     DIRECTIONS,
     ESCAPE_ROOM,
     HAZARD_ROOMS,
+    KEYCARD_READER,
     MAP_GRID,
     START_ROOM,
     Room,
@@ -326,6 +327,28 @@ class HazardTests(unittest.TestCase):
         for route in shortest:
             with self.subTest(route=route):
                 self.assertEqual(sum(self.rooms[r].hazard for r in route), 1)
+
+
+class KeycardReaderTests(unittest.TestCase):
+    def setUp(self):
+        self.rooms = build_ship()
+
+    def test_R10_keycard_reader_is_at_the_airlock_junction(self):
+        """R10 (AC-R10.3): the keycard works at the Airlock Junction."""
+        self.assertEqual(KEYCARD_READER, "airlock_junction")
+        self.assertIn(KEYCARD_READER, self.rooms)
+
+    def test_R10_keycard_reader_room_is_the_only_way_into_the_pod(self):
+        """R10 (AC-R10.2): the locked pod door is the reader room's east exit."""
+        self.assertEqual(self.rooms[KEYCARD_READER].exits["east"], ESCAPE_ROOM)
+        into_pod = [room.id for room in self.rooms.values()
+                    if ESCAPE_ROOM in room.exits.values()]
+        self.assertEqual(into_pod, [KEYCARD_READER])
+
+    def test_R10_keycard_starts_on_the_bridge_away_from_the_reader(self):
+        """R10 (AC-R10.1): the keycard starts on the Bridge, not at the reader."""
+        self.assertIn("keycard", self.rooms["bridge"].items)
+        self.assertNotIn("keycard", self.rooms[KEYCARD_READER].items)
 
 
 if __name__ == "__main__":
