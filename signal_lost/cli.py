@@ -7,7 +7,7 @@ only handles presentation.
 
 import textwrap
 
-from .game import STARTING_OXYGEN, Game, Outcome
+from .game import STARTING_HEALTH, STARTING_OXYGEN, Game, Outcome
 from .parser import is_go_attempt, parse
 from .world import MAP_GRID, build_ship
 
@@ -45,6 +45,7 @@ HELP_TEXT = "\n".join([
     "  take <item>  (get)         pick up an item",
     "  drop <item>                leave an item here",
     "  inventory  (inv, i)        list what you carry",
+    "  use <item>                 use a carried item",
     "  help   (h, ?)              show this list",
     "  quit   (q, exit)           abandon ship",
     "Moving to another room costs 1 oxygen.",
@@ -68,6 +69,15 @@ LOSS_MESSAGE = "\n".join([
     "*** GAME OVER: YOU LOST ***",
 ])
 
+DEATH_MESSAGE = "\n".join([
+    "",
+    "",
+    ">>> CRITICAL INJURIES <<<",
+    "Your suit alarms fade as everything goes dark...",
+    "You didn't survive.",
+    "*** GAME OVER: YOU LOST ***",
+])
+
 QUIT_MESSAGE = "You close your eyes and let the ship drift. Transmission ended."
 GO_WHERE_MESSAGE = "Go where? Try north, south, east, or west."
 UNKNOWN_MESSAGE = "Unknown command: '{text}'. Type 'help' for a list of commands."
@@ -83,6 +93,18 @@ NOT_CARRIED_MESSAGE = "You are not carrying '{item}'."
 DROP_WHAT_MESSAGE = "Drop what?"
 INVENTORY_HEADER = "You are carrying:"
 INVENTORY_EMPTY = "Your inventory is empty."
+HEALED_MESSAGE = "You use the {item} and restore {healed} health."
+FULL_HEALTH_MESSAGE = ("You are already at full health.\n"
+                       "You keep the {item} for later.")
+CANT_USE_MESSAGE = "You can't use the {item}."
+USE_WHAT_MESSAGE = "Use what?"
+
+# Hazard messages (spec.md Section 3.10), shown after entering a hazard room.
+HAZARD_HEADER = "!! HAZARD: -{damage} HEALTH !!"
+HAZARD_MESSAGES = {
+    "reactor_core": "Radiation from the reactor scorches your suit.",
+    "cargo_hold": "A drifting crate slams into you.",
+}
 
 # Ship map layout (spec.md Section 3.7): 4 cells of 11 characters with
 # 2-character gaps fill exactly WIDTH columns.
@@ -116,11 +138,17 @@ def render_gauge(oxygen, game_over=False):
     return gauge
 
 
-def render_room(room, oxygen, game_over=False, items=()):
+def render_health(health):
+    return f"[ HEALTH: {health}/{STARTING_HEALTH} ]"
+
+
+def render_room(room, oxygen, game_over=False, items=(), health=None):
     """Format a room the way spec.md Section 3.6 describes.
 
     ``items`` are the items in the room now; when there are any, an
     ``Items here:`` line goes just before the exits (Section 3.9).
+    ``health``, when given, adds a health gauge under the oxygen gauge
+    (Section 3.10). Every display during play passes it.
     """
     lines = [
         RULE,
@@ -132,7 +160,19 @@ def render_room(room, oxygen, game_over=False, items=()):
     if items:
         lines.append(textwrap.fill(ITEMS_HERE_PREFIX + ", ".join(items), WIDTH))
     lines += [render_exits(room), render_gauge(oxygen, game_over)]
+    if health is not None:
+        lines.append(render_health(health))
     return "\n".join(lines)
+
+
+def render_hazard(room_id, damage):
+    """The warning shown after a move into a hazard room, or "" if none."""
+    if not damage:
+        return ""
+    return "\n\n" + "\n".join([
+        HAZARD_HEADER.format(damage=damage),
+        textwrap.fill(HAZARD_MESSAGES[room_id], WIDTH),
+    ])
 
 
 def render_inventory(inventory):
@@ -197,27 +237,31 @@ def render_scan(room):
     ])
 
 
+# What follows the room display after each kind of successful move.
+_MOVE_ENDINGS = {
+    Outcome.MOVED: "",
+    Outcome.WON: WIN_MESSAGE,
+    Outcome.LOST: LOSS_MESSAGE,
+    Outcome.DIED: DEATH_MESSAGE,
+}
+
+
 def render_result(result, command):
     """Turn a TurnResult into the text to show, or None to show nothing."""
     outcome = result.outcome
-    if outcome is Outcome.MOVED:
+    if outcome in _MOVE_ENDINGS:
+        game_over = outcome is not Outcome.MOVED
         return (f"You head {command.arg}...\n\n"
-                + render_room(result.room, result.oxygen, items=result.items))
-    if outcome is Outcome.WON:
-        return (f"You head {command.arg}...\n\n"
-                + render_room(result.room, result.oxygen, game_over=True,
-                              items=result.items)
-                + WIN_MESSAGE.format(oxygen=result.oxygen))
-    if outcome is Outcome.LOST:
-        return (f"You head {command.arg}...\n\n"
-                + render_room(result.room, result.oxygen, game_over=True,
-                              items=result.items)
-                + LOSS_MESSAGE)
+                + render_room(result.room, result.oxygen, game_over=game_over,
+                              items=result.items, health=result.health)
+                + render_hazard(result.room.id, result.damage)
+                + _MOVE_ENDINGS[outcome].format(oxygen=result.oxygen))
     if outcome is Outcome.BLOCKED:
         return (BLOCKED_MESSAGE.format(direction=command.arg) + "\n"
                 + render_exits(result.room))
     if outcome is Outcome.LOOKED:
-        return render_room(result.room, result.oxygen, items=result.items)
+        return render_room(result.room, result.oxygen, items=result.items,
+                           health=result.health)
     if outcome is Outcome.HELP:
         return HELP_TEXT
     if outcome is Outcome.MAPPED:
@@ -234,6 +278,12 @@ def render_result(result, command):
         return textwrap.fill(NOT_CARRIED_MESSAGE.format(item=result.item), WIDTH)
     if outcome is Outcome.INVENTORY:
         return render_inventory(result.inventory)
+    if outcome is Outcome.HEALED:
+        return HEALED_MESSAGE.format(item=result.item, healed=result.healed)
+    if outcome is Outcome.FULL_HEALTH:
+        return FULL_HEALTH_MESSAGE.format(item=result.item)
+    if outcome is Outcome.CANT_USE:
+        return textwrap.fill(CANT_USE_MESSAGE.format(item=result.item), WIDTH)
     if outcome is Outcome.QUIT:
         return QUIT_MESSAGE
     if outcome is Outcome.INVALID:
@@ -241,6 +291,8 @@ def render_result(result, command):
             return TAKE_WHAT_MESSAGE
         if command.kind == "drop":
             return DROP_WHAT_MESSAGE
+        if command.kind == "use":
+            return USE_WHAT_MESSAGE
         if is_go_attempt(command) or command.kind == "move":
             return GO_WHERE_MESSAGE
         return UNKNOWN_MESSAGE.format(text=command.arg)
@@ -255,7 +307,8 @@ def run(input_fn=input, output_fn=print):
     """
     game = Game()
     output_fn(INTRO)
-    output_fn(render_room(game.room, game.oxygen, items=game.items_here) + "\n")
+    output_fn(render_room(game.room, game.oxygen, items=game.items_here,
+                          health=game.health) + "\n")
 
     while not game.is_over:
         try:

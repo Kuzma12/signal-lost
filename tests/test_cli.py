@@ -1,6 +1,6 @@
 """Terminal output and full-playthrough tests for signal_lost.cli.
 
-Every test name starts with the requirement it checks (R1-R7), and
+Every test name starts with the requirement it checks (R1-R9), and
 its docstring names the acceptance criterion from spec.md Section 6.
 The CLI is driven by a fake input function (a scripted list of inputs) and
 a fake output function (a list that records every printed block), so no real
@@ -13,7 +13,7 @@ import sys
 import unittest
 from pathlib import Path
 
-from signal_lost.cli import render_map, render_room, render_scan, run
+from signal_lost.cli import HAZARD_MESSAGES, render_map, render_room, render_scan, run
 from signal_lost.game import Status
 from signal_lost.world import DIRECTIONS, build_ship
 
@@ -720,6 +720,188 @@ class Round3PlaythroughTests(unittest.TestCase):
         self.assertIn("  - flashlight", completed.stdout)
         self.assertIn("You drop the flashlight.", completed.stdout)
         self.assertNotIn("Traceback", completed.stderr)
+
+
+# ----- Round 4: health, hazards, and the medkit (R8, R9) -------------------
+
+TO_REACTOR = ["n", "e", "s", "e"]
+REACTOR_DEATH = TO_REACTOR + ["w", "e"] * 4
+DEATH_HEADER = ">>> CRITICAL INJURIES <<<"
+DEATH_TEXT = "You didn't survive."
+HAZARD_HEADER = "!! HAZARD: -2 HEALTH !!"
+
+
+def gauge_lines(text):
+    """The (oxygen, health) gauge line pairs in a block of output."""
+    lines = text.splitlines()
+    return [(line, lines[i + 1]) for i, line in enumerate(lines[:-1])
+            if line.startswith("[ OXYGEN:")]
+
+
+class HealthDisplayTests(unittest.TestCase):
+    def test_R8_opening_shows_full_health_under_oxygen(self):
+        """R8 (AC-R8.2): the first room display has the health gauge line."""
+        opening = Session([]).turns()[0]
+        self.assertEqual(gauge_lines(opening), [("[ OXYGEN: 12/12 ]", "[ HEALTH: 10/10 ]")])
+
+    def test_R8_every_move_shows_health_under_oxygen(self):
+        """R8 (AC-R8.2): entering a room shows current health on the next line."""
+        turns = Session(TO_REACTOR).turns()
+        expected = [("11", "10"), ("10", "10"), ("9", "10"), ("8", "8")]
+        for index, (oxygen, health) in enumerate(expected, start=1):
+            with self.subTest(move=index):
+                self.assertEqual(gauge_lines(turns[index]),
+                                 [(f"[ OXYGEN: {oxygen}/12 ]", f"[ HEALTH: {health}/10 ]")])
+
+    def test_R8_look_shows_health(self):
+        """R8 (AC-R8.2): look shows the health gauge, and costs no health."""
+        turns = Session(TO_REACTOR + ["look"]).turns()
+        self.assertIn("[ HEALTH: 8/10 ]", turns[5].splitlines())
+        self.assertNotIn(HAZARD_HEADER, turns[5])
+
+    def test_R8_final_displays_show_health(self):
+        """R8 (AC-R8.2): the win, oxygen-loss, and death displays show health."""
+        cases = [(SHORTEST_ROUTE, "[ HEALTH: 8/10 ]"),
+                 (WANDER_LOSS, "[ HEALTH: 10/10 ]"),
+                 (REACTOR_DEATH, "[ HEALTH: 0/10 ]")]
+        for inputs, gauge in cases:
+            with self.subTest(inputs=inputs):
+                self.assertIn(gauge, Session(inputs).turns()[-1].splitlines())
+
+    def test_R8_render_room_shows_health_when_given(self):
+        """R8 (AC-R8.2): render_room puts the health gauge last, under oxygen."""
+        lines = render_room(ROOMS["engineering"], 3, health=6).splitlines()
+        self.assertEqual(lines[-2], "[ OXYGEN: 3/12 ]  !! LOW OXYGEN !!")
+        self.assertEqual(lines[-1], "[ HEALTH: 6/10 ]")
+
+
+class HazardOutputTests(unittest.TestCase):
+    def test_R8_entering_the_reactor_shows_its_hazard_message(self):
+        """R8 (AC-R8.4): the hazard message follows the room display."""
+        turn = Session(TO_REACTOR).turns()[4]
+        lines = turn.splitlines()
+        self.assertIn(HAZARD_HEADER, lines)
+        start = lines.index(HAZARD_HEADER)
+        self.assertEqual(lines[start - 1], "")
+        self.assertEqual(lines[start - 2], "[ HEALTH: 8/10 ]")
+        self.assertEqual(squash(" ".join(lines[start + 1:])),
+                         "Radiation from the reactor scorches your suit.")
+
+    def test_R8_entering_the_cargo_hold_shows_its_hazard_message(self):
+        """R8 (AC-R8.4): the Cargo Hold has its own hazard text."""
+        turn = Session(["n", "e", "s", "s"]).turns()[4]
+        self.assertIn(HAZARD_HEADER, turn)
+        self.assertIn("A drifting crate slams into you.", turn)
+
+    def test_R8_every_hazard_room_has_a_message(self):
+        """R8 (AC-R8.4): HAZARD_MESSAGES covers exactly the hazard rooms."""
+        hazards = {room.id for room in ROOMS.values() if room.hazard}
+        self.assertEqual(set(HAZARD_MESSAGES), hazards)
+
+    def test_R8_going_back_into_a_hazard_shows_the_message_again(self):
+        """R8 (AC-R8.4): every entry shows the hazard message."""
+        turns = Session(TO_REACTOR + ["w", "e"]).turns()
+        self.assertIn(HAZARD_HEADER, turns[4])
+        self.assertNotIn(HAZARD_HEADER, turns[5])
+        self.assertIn(HAZARD_HEADER, turns[6])
+        self.assertIn("[ HEALTH: 6/10 ]", turns[6])
+
+    def test_R8_safe_rooms_show_no_hazard_message(self):
+        """R8 (AC-R8.5): only hazard rooms print the message."""
+        session = Session(["n", "e", "n", "e", "s", "w", "s", "s", "e"])
+        self.assertNotIn("HAZARD", "\n".join(session.turns()[1:7]))
+
+    def test_R8_shortest_win_shows_the_hazard_then_wins_with_8_health(self):
+        """R8 (AC-R8.8): the player escapes without healing."""
+        session = Session(SHORTEST_ROUTE)
+        self.assertIn(HAZARD_HEADER, session.turns()[4])
+        self.assertIn(WIN_BANNER, session.text)
+        self.assertEqual(session.game.health, 8)
+
+
+class DeathOutputTests(unittest.TestCase):
+    def test_R8_health_ending_is_shown_when_health_and_oxygen_hit_zero(self):
+        """R8 (AC-R8.6, AC-R8.7): five reactor entries print the death ending."""
+        session = Session(REACTOR_DEATH + ["look"])
+        final = session.turns()[-1]
+        self.assertEqual(len(session.turns()), len(REACTOR_DEATH) + 1)  # look never read
+        for text in (HAZARD_HEADER, DEATH_HEADER, DEATH_TEXT, LOSS_BANNER):
+            with self.subTest(text=text):
+                self.assertIn(text, final)
+        self.assertNotIn("OXYGEN DEPLETED", final)
+        self.assertLess(final.index("[ HEALTH: 0/10 ]"), final.index(HAZARD_HEADER))
+        self.assertLess(final.index(HAZARD_HEADER), final.index(DEATH_HEADER))
+        self.assertLess(final.index(DEATH_TEXT), final.index(LOSS_BANNER))
+        self.assertEqual(session.game.status, Status.LOST)
+
+    def test_R8_oxygen_loss_still_shows_the_oxygen_ending(self):
+        """R8 (AC-R8.7) with R3 (AC-R3.6): reaching the pod on move 12 is unchanged."""
+        final = Session(TWELVE_MOVE_POD).turns()[-1]
+        self.assertIn(">>> OXYGEN DEPLETED <<<", final)
+        self.assertNotIn(DEATH_HEADER, final)
+
+
+class UseOutputTests(unittest.TestCase):
+    def test_R9_using_the_medkit_reports_health_restored(self):
+        """R9 (AC-R9.2, AC-R9.3): 'You use the medkit and restore N health.'"""
+        inputs = ["n", "take medkit", "e", "s", "e", "w", "e", "use medkit", "i"]
+        turns = Session(inputs).turns()
+        self.assertEqual(turns[8], "You use the medkit and restore 4 health.\n")
+        self.assertIn("Your inventory is empty.", turns[9])
+
+    def test_R9_capped_healing_reports_the_amount_actually_restored(self):
+        """R9 (AC-R9.2): at 8 health the message says 2."""
+        turns = Session(["n", "take medkit", "e", "s", "e", "use medkit", "look"]).turns()
+        self.assertEqual(turns[6], "You use the medkit and restore 2 health.\n")
+        self.assertIn("[ HEALTH: 10/10 ]", turns[7])
+
+    def test_R9_full_health_keeps_the_medkit(self):
+        """R9 (AC-R9.5): the medkit isn't wasted at full health."""
+        turns = Session(["n", "take medkit", "use medkit", "i"]).turns()
+        self.assertEqual(turns[3], "You are already at full health.\n"
+                                   "You keep the medkit for later.\n")
+        self.assertIn("  - medkit", turns[4])
+
+    def test_R9_using_an_item_not_carried_says_so(self):
+        """R9 (AC-R9.4): a medkit still in the room has to be taken first."""
+        turns = Session(["n", "USE  MEDKIT", "use banana"]).turns()
+        self.assertEqual(turns[2], "You are not carrying 'medkit'.\n")
+        self.assertEqual(turns[3], "You are not carrying 'banana'.\n")
+
+    def test_R9_other_items_cannot_be_used(self):
+        """R9 (AC-R9.7): 'use flashlight' says it can't be used."""
+        turns = Session(["take flashlight", "use flashlight"]).turns()
+        self.assertEqual(turns[2], "You can't use the flashlight.\n")
+
+    def test_R9_use_with_no_name_asks_what(self):
+        """R9 (AC-R9.1): bare 'use' gives 'Use what?'."""
+        self.assertEqual(Session(["use"]).turns()[1], "Use what?\n")
+
+    def test_R9_using_the_medkit_costs_no_oxygen(self):
+        """R9 (AC-R9.6): oxygen is the same before and after use."""
+        session = Session(["n", "take medkit", "e", "s", "e", "use medkit", "look"])
+        self.assertIn("[ OXYGEN: 8/12 ]", session.turns()[7])
+
+    def test_R9_help_lists_use(self):
+        """R9 (AC-R9.1): help shows the use command."""
+        help_text = Session(["help"]).turns()[1]
+        self.assertIn("use <item>", help_text)
+
+    def test_R8_R9_new_output_fits_in_50_columns(self):
+        """R8 (AC-R8.9) and R9: help, hazards, death, and use messages fit."""
+        inputs = (["help", "take flashlight", "use flashlight", "use", "use banana",
+                   "n", "take medkit", "use medkit", "e", "s", "s",
+                   "e", "n", "s", "w", "e", "n", "s", "w"])
+        session = Session(inputs)
+        self.assertIn(DEATH_HEADER, session.text)
+        for line in session.text.splitlines():
+            if line.startswith(("Unknown command", "The hatch", "You close", "Move with")):
+                continue  # Round 1 lines already known to be wider (handoff 3)
+            with self.subTest(line=line):
+                self.assertLessEqual(len(line), 50)
+        for room_id, message in HAZARD_MESSAGES.items():
+            with self.subTest(room=room_id):
+                self.assertLessEqual(len(message), 50)
 
 
 if __name__ == "__main__":
