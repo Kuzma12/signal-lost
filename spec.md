@@ -20,8 +20,9 @@ This spec covers Rounds 1 to 4 of *Signal Lost*.
   item that is used up (the medkit). Everything else from Rounds 1-3
   behaves as before.
 
-Features planned for later rounds (inventory, hazards, puzzles, save/load)
-are **out of scope**. Section 9 only describes where they will fit.
+Inventory (Round 3) and hazards (Round 4) are now built. Features still
+planned for later rounds (puzzles / locked doors and save/load) are **out
+of scope**. Section 9 only describes where they will fit.
 
 ---
 
@@ -825,10 +826,15 @@ No install step, virtual environment, or dependencies are needed.
 
 ---
 
-## 9. Extensibility for Later Rounds (design only; NOT implemented now)
+## 9. Extensibility for Later Rounds (Round 1 design notes)
 
 The Round 1 design leaves clear places for future features. **None of the
 following will be built in Round 1.**
+
+> **Status after Round 4:** Inventory (Round 3) and hazards (Round 4) are
+> built; the rows below say where. Puzzles / locked doors and save/load are
+> still not implemented. Save/load now also needs `visited`, `room_items`,
+> `inventory`, and `health` (Sections 3.7, 3.9, 3.10).
 
 | Future feature | Where it will plug in |
 |----------------|-----------------------|
