@@ -1,7 +1,7 @@
 """The ship map: room data and how the rooms connect.
 
 This module only describes the world. It knows nothing about oxygen,
-player input, or printing.
+health, player input, or printing.
 """
 
 from dataclasses import dataclass
@@ -39,7 +39,8 @@ class Room:
     leads to. It is stored as a read-only mapping so the map can't be
     changed by accident during play. ``clue`` is what the scanner reports
     in this room. ``items`` names the items lying here when a game starts;
-    the Game tracks where items are after that.
+    the Game tracks where items are after that. ``hazard`` is True if
+    entering the room hurts the player (the Game decides by how much).
     """
 
     id: str
@@ -48,6 +49,7 @@ class Room:
     exits: Mapping[str, str]
     clue: str
     items: Tuple[str, ...] = ()
+    hazard: bool = False
 
     def __post_init__(self):
         object.__setattr__(self, "exits", MappingProxyType(dict(self.exits)))
@@ -66,6 +68,10 @@ STARTING_ITEMS = {
     "bridge": ("keycard",),
     "engineering": ("repair kit",),
 }
+
+# Rooms that hurt the player every time they are entered (spec.md
+# Section 3.10).
+HAZARD_ROOMS = frozenset({"reactor_core", "cargo_hold"})
 
 _ROOM_DATA = [
     (
@@ -193,6 +199,7 @@ def build_ship():
     """
     return {
         room_id: Room(room_id, name, description, exits, clue,
-                      STARTING_ITEMS.get(room_id, ()))
+                      STARTING_ITEMS.get(room_id, ()),
+                      room_id in HAZARD_ROOMS)
         for room_id, name, description, exits, clue in _ROOM_DATA
     }

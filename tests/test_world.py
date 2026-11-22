@@ -1,6 +1,6 @@
 """Map integrity tests for signal_lost.world.
 
-Every test name starts with the requirement it checks (R1-R7), and
+Every test name starts with the requirement it checks (R1-R9), and
 its docstring names the acceptance criterion from spec.md Section 6.
 """
 
@@ -10,6 +10,7 @@ from collections import deque
 from signal_lost.world import (
     DIRECTIONS,
     ESCAPE_ROOM,
+    HAZARD_ROOMS,
     MAP_GRID,
     START_ROOM,
     Room,
@@ -264,6 +265,67 @@ class ItemPlacementTests(unittest.TestCase):
         """R6 (AC-R6.2): a Room built without items holds nothing."""
         room = Room("x", "X", "A room.", {"north": "y"}, "A clue.")
         self.assertEqual(room.items, ())
+
+
+def routes_to_pod(rooms, max_moves):
+    """Every simple path (no room twice) from the start to the Escape Pod
+    with at most ``max_moves`` moves, as lists of room ids after the start."""
+    found = []
+
+    def walk(room_id, path):
+        if room_id == ESCAPE_ROOM:
+            found.append(path)
+            return
+        if len(path) == max_moves:
+            return
+        for destination in rooms[room_id].exits.values():
+            if destination != START_ROOM and destination not in path:
+                walk(destination, path + [destination])
+
+    walk(START_ROOM, [])
+    return found
+
+
+class HazardTests(unittest.TestCase):
+    def setUp(self):
+        self.rooms = build_ship()
+
+    def test_R8_only_reactor_core_and_cargo_hold_are_hazards(self):
+        """R8 (AC-R8.3): exactly these two rooms hurt the player."""
+        hazards = {room.id for room in self.rooms.values() if room.hazard}
+        self.assertEqual(hazards, {"reactor_core", "cargo_hold"})
+
+    def test_R8_hazard_rooms_constant_matches_room_flags(self):
+        """R8 (AC-R8.3): HAZARD_ROOMS and Room.hazard agree."""
+        for room in self.rooms.values():
+            with self.subTest(room=room.id):
+                self.assertEqual(room.hazard, room.id in HAZARD_ROOMS)
+
+    def test_R8_start_and_escape_pod_are_safe(self):
+        """R8 (AC-R8.3): neither the Cryo Bay nor the Escape Pod is a hazard."""
+        self.assertFalse(self.rooms[START_ROOM].hazard)
+        self.assertFalse(self.rooms[ESCAPE_ROOM].hazard)
+
+    def test_R8_room_without_hazard_argument_is_safe(self):
+        """R8 (AC-R8.3): a Room built without the hazard flag is safe."""
+        room = Room("x", "X", "A room.", {"north": "y"}, "A clue.")
+        self.assertFalse(room.hazard)
+
+    def test_R8_every_route_to_the_pod_passes_a_hazard(self):
+        """R8 (AC-R8.8): any escape costs at least 2 health."""
+        routes = routes_to_pod(self.rooms, 12)
+        self.assertTrue(routes)
+        for route in routes:
+            with self.subTest(route=route):
+                self.assertTrue(any(self.rooms[r].hazard for r in route))
+
+    def test_R8_shortest_routes_enter_exactly_one_hazard(self):
+        """R8 (AC-R8.8): both 6-move routes cost only 2 health, so no healing is needed."""
+        shortest = [r for r in routes_to_pod(self.rooms, 6) if len(r) == 6]
+        self.assertEqual(len(shortest), 2)
+        for route in shortest:
+            with self.subTest(route=route):
+                self.assertEqual(sum(self.rooms[r].hazard for r in route), 1)
 
 
 if __name__ == "__main__":
